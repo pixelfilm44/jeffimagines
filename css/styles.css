@@ -32,6 +32,10 @@ html { scroll-behavior: smooth; }
   --brain-fg: #4A3420;
   --brain-accent: #FF6B4A;
 
+  --contain-bg: #060B14;
+  --contain-fg: #D8FBFF;
+  --contain-accent: #33E0FF;
+
   --radius-lg: 28px;
   --radius-md: 18px;
   --radius-sm: 10px;
@@ -332,6 +336,9 @@ img, svg { display: block; max-width: 100%; }
 .card-brain { --card-accent: var(--brain-accent); }
 .card-brain .card-art { background: var(--brain-bg); }
 
+.card-contain { --card-accent: var(--contain-accent); }
+.card-contain .card-art { background: var(--contain-bg); }
+
 /* ============ Philosophy ============ */
 .principle-grid {
   display: grid;
@@ -365,13 +372,6 @@ img, svg { display: block; max-width: 100%; }
 }
 .about-copy { max-width: 620px; }
 .about-copy h2 { font-size: clamp(1.8rem, 3.4vw, 2.4rem); }
-.about-edit-note {
-  font-style: italic;
-  color: var(--ink-faint);
-  font-size: 0.9rem;
-  border-left: 3px solid var(--line);
-  padding-left: 14px;
-}
 
 /* ============ Contact ============ */
 .contact {
@@ -466,4 +466,76 @@ img, svg { display: block; max-width: 100%; }
 @media (max-width: 420px) {
   .wrap { padding: 0 18px; }
   .card-body { padding: 20px 20px 24px; }
+}
+
+/* ============ Card sub-link (FAQ / Privacy) ============ */
+.card-links { display: flex; align-items: center; gap: 14px; margin-top: auto; flex-wrap: wrap; }
+.card-links .btn-card { margin-top: 0; }
+.link-secondary {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  border-bottom: 1px solid transparent;
+}
+.link-secondary:hover { color: var(--brand); border-bottom-color: var(--brand); }
+
+/* ============ Legal / FAQ pages ============ */
+.legal-hero {
+  padding: 64px 0 40px;
+  border-bottom: 1px solid var(--line);
+}
+.legal-hero .eyebrow { margin-bottom: 0.6em; }
+.legal-hero h1 { font-size: clamp(2rem, 4.6vw, 3rem); margin-bottom: 0.3em; }
+.legal-hero p { max-width: 620px; font-size: 1.05rem; }
+.legal-back { display: inline-flex; align-items: center; gap: 6px; font-size: 0.9rem; font-weight: 600; color: var(--ink-soft); margin-bottom: 1.6em; }
+.legal-back:hover { color: var(--brand); }
+
+.legal-section { padding: 64px 0; }
+.legal-section + .legal-section { border-top: 1px solid var(--line); }
+.legal-section .section-head { margin-bottom: 36px; }
+
+.faq-list { display: flex; flex-direction: column; gap: 12px; max-width: 760px; }
+.faq-item {
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 4px 22px;
+}
+.faq-item summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 1rem;
+  color: var(--ink);
+  padding: 18px 0;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.faq-item summary::-webkit-details-marker { display: none; }
+.faq-item summary::after {
+  content: "+";
+  flex-shrink: 0;
+  font-size: 1.3rem;
+  font-weight: 400;
+  color: var(--ink-faint);
+  transition: transform 0.2s ease;
+}
+.faq-item[open] summary::after { transform: rotate(45deg); }
+.faq-item p { font-size: 0.94rem; padding-bottom: 18px; margin: 0; }
+
+.legal-prose { max-width: 720px; font-size: 0.95rem; }
+.legal-prose h3 { font-size: 1.08rem; margin-top: 1.4em; }
+.legal-prose ul { list-style: disc; padding-left: 1.3em; margin-bottom: 1em; }
+.legal-prose li { color: var(--ink-soft); margin-bottom: 0.4em; }
+.legal-prose .legal-updated { color: var(--ink-faint); font-size: 0.88rem; margin-bottom: 1.6em; }
+.legal-note {
+  font-size: 0.88rem;
+  color: var(--ink-faint);
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 16px 20px;
+  max-width: 720px;
 }
