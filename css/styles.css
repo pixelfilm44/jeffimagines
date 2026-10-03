@@ -36,6 +36,9 @@ html { scroll-behavior: smooth; }
   --contain-fg: #D8FBFF;
   --contain-accent: #33E0FF;
 
+  --corn-bg: #FFF3D6;
+  --corn-accent: #D9822B;
+
   --radius-lg: 28px;
   --radius-md: 18px;
   --radius-sm: 10px;
@@ -338,6 +341,17 @@ img, svg { display: block; max-width: 100%; }
 
 .card-contain { --card-accent: var(--contain-accent); }
 .card-contain .card-art { background: var(--contain-bg); }
+
+.card-corn { --card-accent: var(--corn-accent); }
+.card-corn .card-art { background: var(--corn-bg); }
+@media (min-width: 560px) {
+  .card-corn { flex-direction: column; }
+  .card-corn .card-art { width: auto; }
+}
+@media (min-width: 1100px) {
+  .card-corn { flex-direction: row; }
+  .card-corn .card-art { width: 400px; }
+}
 
 /* ============ Philosophy ============ */
 .principle-grid {
