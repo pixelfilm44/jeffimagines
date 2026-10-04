@@ -344,13 +344,14 @@ img, svg { display: block; max-width: 100%; }
 
 .card-corn { --card-accent: var(--corn-accent); }
 .card-corn .card-art { background: var(--corn-bg); }
-@media (min-width: 560px) {
-  .card-corn { flex-direction: column; }
-  .card-corn .card-art { width: auto; }
-}
-@media (min-width: 1100px) {
-  .card-corn { flex-direction: row; }
-  .card-corn .card-art { width: 400px; }
+/* Landscape-only game: span the full row, screenshot left at its natural width */
+.card-corn { grid-column: 1 / -1; }
+.card-corn .card-art { width: auto; }
+.card-corn .art-shot { max-height: none; }
+@media (min-width: 720px) {
+  .card-corn { flex-direction: row; align-items: center; }
+  .card-corn .card-art { flex: 0 0 55%; max-width: 55%; align-self: stretch; }
+  .card-corn .art-shot { width: 100%; }
 }
 
 /* ============ Philosophy ============ */
@@ -538,6 +539,8 @@ img, svg { display: block; max-width: 100%; }
 }
 .faq-item[open] summary::after { transform: rotate(45deg); }
 .faq-item p { font-size: 0.94rem; padding-bottom: 18px; margin: 0; }
+.faq-group + .faq-group { margin-top: 36px; }
+.faq-group h3 { font-size: 1.08rem; margin-bottom: 14px; }
 
 .legal-prose { max-width: 720px; font-size: 0.95rem; }
 .legal-prose h3 { font-size: 1.08rem; margin-top: 1.4em; }
