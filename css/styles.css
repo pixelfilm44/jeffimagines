@@ -344,13 +344,10 @@ img, svg { display: block; max-width: 100%; }
 
 .card-corn { --card-accent: var(--corn-accent); }
 .card-corn .card-art { background: var(--corn-bg); }
-/* Landscape-only game: full-width card, screenshot on its own row above the text */
-.card-corn { grid-column: 1 / -1; flex-direction: column; }
+/* Landscape-only game: same width as the other cards, screenshot on its own row above the text */
+.card-corn { flex-direction: column; }
 .card-corn .card-art { width: auto; }
 .card-corn .art-shot { width: 100%; max-height: none; }
-@media (min-width: 720px) {
-  .card-corn .art-shot { width: 50%; }
-}
 
 /* ============ Philosophy ============ */
 .principle-grid {
