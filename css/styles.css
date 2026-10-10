@@ -348,6 +348,9 @@ img, svg { display: block; max-width: 100%; }
 .card-corn { grid-column: 1 / -1; flex-direction: column; }
 .card-corn .card-art { width: auto; }
 .card-corn .art-shot { width: 100%; max-height: none; }
+@media (min-width: 720px) {
+  .card-corn .art-shot { width: 50%; }
+}
 
 /* ============ Philosophy ============ */
 .principle-grid {
