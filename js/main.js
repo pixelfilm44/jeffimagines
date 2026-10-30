@@ -18,7 +18,7 @@ mainNav.querySelectorAll('a').forEach((link) => {
 
 // Scroll-reveal for sections and cards
 const revealTargets = document.querySelectorAll(
-  '.game-card, .principle, .section-head, .about-inner, .contact-inner'
+  '.game-card, .film-card, .principle, .section-head, .about-inner, .contact-inner'
 );
 revealTargets.forEach((el) => el.classList.add('reveal'));
 
@@ -34,6 +34,19 @@ const io = new IntersectionObserver(
   { threshold: 0.15 }
 );
 revealTargets.forEach((el) => io.observe(el));
+
+// Short films: swap the thumbnail for the YouTube player on click
+document.querySelectorAll('.film-thumb').forEach((thumb) => {
+  thumb.addEventListener('click', () => {
+    const frame = document.createElement('iframe');
+    frame.className = 'film-frame';
+    frame.src = `https://www.youtube-nocookie.com/embed/${thumb.dataset.video}?autoplay=1&rel=0`;
+    frame.title = thumb.getAttribute('aria-label').replace(/^Play /, '');
+    frame.allow = 'autoplay; encrypted-media; picture-in-picture; fullscreen';
+    frame.allowFullscreen = true;
+    thumb.replaceWith(frame);
+  });
+});
 
 // Footer year
 document.getElementById('year').textContent = new Date().getFullYear();
