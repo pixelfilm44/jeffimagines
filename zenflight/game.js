@@ -1535,6 +1535,21 @@
       p.x += (p.vx + Math.sin(p.phase) * 14 + plane.breezeVel * 0.25) * dt;
       p.y += p.vy * dt;
 
+      // Leaves and petals are nudged aside by the plane's passing air
+      if (!p.seek) {
+        const rx = p.x - plane.x;
+        const ry = p.y - plane.y;
+        const rd2 = rx * rx + ry * ry;
+        if (rd2 < 150 * 150 && rd2 > 1) {
+          const rd = Math.sqrt(rd2);
+          const closeness = 1 - rd / 150;
+          const altFactor = clampNum(1 - Math.abs((p.z || plane.z) - plane.z) / 45, 0.3, 1);
+          const push = closeness * closeness * 300 * (plane.speed / 240) * altFactor;
+          p.x += (rx / rd) * push * dt;
+          p.y += (ry / rd) * push * dt;
+        }
+      }
+
       if (p.ttl !== undefined) {
         p.age += dt;
         p.vx *= Math.pow(0.5, dt);
