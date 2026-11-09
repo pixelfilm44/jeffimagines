@@ -610,6 +610,7 @@
 
   // Above this altitude the plane glides over every tree (and everything else)
   const TREELINE = 78;
+  const HIGH_RING_KEEP = 0.2; // share of wind rings still around above the treetops
   let treeHaze = 0;            // 0..1 eased "trees are far below you" look
   let aboveTrees = false;
   let treeFlyoverShown = false;
@@ -851,7 +852,10 @@
             radius: 54,
             collected: false,
             collectAnim: 0,
-            pulse: Math.random() * Math.PI * 2
+            pulse: Math.random() * Math.PI * 2,
+            // Only ~1 in 5 rings stays up in the thin air above the treetops; the rest fade away
+            highKeep: Math.random() < HIGH_RING_KEEP,
+            fade: 1
           });
         }
       }
@@ -1471,6 +1475,11 @@
     for (let i = 0; i < thermals.length; i++) {
       const th = thermals[i];
       th.pulse += dt * 2.6;
+      if (!th.collected) {
+        const want = (plane.z >= TREELINE && !th.highKeep) ? 0 : 1;
+        th.fade += (want - th.fade) * Math.min(1, 3 * dt);
+        if (th.fade < 0.5) continue; // faded rings can't be caught
+      }
       if (th.collected) {
         if (th.collectAnim < 1) {
           th.collectAnim = Math.min(1, th.collectAnim + dt * 1.8);
@@ -2305,12 +2314,14 @@
     for (let i = 0; i < thermals.length; i++) {
       const th = thermals[i];
       if (th.collected && th.collectAnim >= 1) continue;
+      if (!th.collected && th.fade < 0.02) continue;
 
       // Rings hang in the air at the plane's height, so they keep the plane's on-screen scale
       const F = planeScreenScale();
       ctx.save();
       ctx.translate(plane.x + (th.x - plane.x) * F, plane.y + (th.y - plane.y) * F);
       ctx.scale(F, F);
+      if (!th.collected) ctx.globalAlpha *= th.fade;
 
       if (th.collected) {
         // Expanding upward gust of air animation when the plane collects the circle
