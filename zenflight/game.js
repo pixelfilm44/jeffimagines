@@ -229,6 +229,26 @@
       this.windFilter.connect(this.windGain);
       this.windGain.connect(this.master);
       noiseNode.start();
+
+      // Soft rain hiss (silent until the weather turns wet)
+      const rainNode = this.ctx.createBufferSource();
+      rainNode.buffer = noiseBuffer;
+      rainNode.loop = true;
+      rainNode.playbackRate.value = 1.7;
+      this.rainFilter = this.ctx.createBiquadFilter();
+      this.rainFilter.type = 'highpass';
+      this.rainFilter.frequency.value = 1400;
+      this.rainGain = this.ctx.createGain();
+      this.rainGain.gain.value = 0;
+      rainNode.connect(this.rainFilter);
+      this.rainFilter.connect(this.rainGain);
+      this.rainGain.connect(this.master);
+      rainNode.start();
+    }
+
+    setRain(level) {
+      if (!this.initialized || !this.ctx || !this.rainGain) return;
+      this.rainGain.gain.setTargetAtTime(level * 0.55, this.ctx.currentTime, 0.4);
     }
 
     resume() {
@@ -1035,6 +1055,7 @@
 
   // UI Button Actions
   function startFlight() {
+    resetSky();
     if (input.tiltEnabled) {
       requestTiltPermissionIfNeeded();
     }
@@ -1714,6 +1735,7 @@
     drawSkyBalloonShadows();
     drawObstacles3D(biome, time);
     drawSkyBalloons(time, 'below');
+    drawCloudShadows(time);
     if (treeHaze >= 0.5) drawAirplaneShadow();
     drawHiddenCranes(time);
 
@@ -1738,15 +1760,19 @@
     // 12. Subtle Atmospheric Sun Glow in Upper Corner
     const sunGrad = ctx.createRadialGradient(width * 0.82, height * 0.12, 10, width * 0.82, height * 0.12, Math.max(width, height) * 0.65);
     sunGrad.addColorStop(0, biome.sunGlow);
+    ctx.globalAlpha = sky.daylight;
     sunGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
     ctx.fillStyle = sunGrad;
     ctx.fillRect(0, 0, width, height);
+    ctx.globalAlpha = 1;
 
     if (currentBiomeIndex === 2) drawAurora(time);
     if (mistLevel > 0.01) {
       ctx.fillStyle = `rgba(226, 240, 246, ${(mistLevel * 0.42).toFixed(3)})`;
       ctx.fillRect(0, 0, width, height);
     }
+
+    drawSkyOverlay(time, anchorYRatio);
 
     ctx.restore();
   }
@@ -3635,6 +3661,7 @@
   }
 
   function updateAtmosphere(dt, time, interactive) {
+    updateSky(dt, time, interactive);
     // Nordic aurora brightens as the glide gets longer
     const flyingish = gameState === STATE.FLYING || gameState === STATE.LANDING;
     const auroraTarget = flyingish ? 0.15 + 0.85 * Math.min(1, plane.distanceFlown / 3000) : 0.3;
@@ -4083,6 +4110,271 @@
       ctx.lineWidth = Math.max(1, R * 0.03);
       ctx.beginPath(); ctx.arc(0, 0, R * 0.16, 0, Math.PI * 2); ctx.stroke();
       ctx.restore();
+    }
+  }
+
+
+  // ===================================================================
+  // SKY — time of day (sunset, night, sunrise) and changing weather
+  // ===================================================================
+  const DAY_CYCLE = 100;       // seconds for a full day during a flight
+  const SKY_KEYS = [
+    // p: position in the day; m: multiply tint; g: warm/cool glow [r,g,b,a]; side: -1 left, 1 right
+    { p: 0.00, m: [255, 255, 255], g: [255, 240, 200, 0.0], side: 1 },
+    { p: 0.26, m: [255, 252, 244], g: [255, 230, 180, 0.04], side: 1 },
+    { p: 0.34, m: [255, 206, 158], g: [255, 140, 70, 0.30], side: 1 },   // sunset
+    { p: 0.41, m: [178, 150, 186], g: [255, 110, 120, 0.16], side: 1 },  // dusk
+    { p: 0.47, m: [92, 106, 160], g: [120, 140, 220, 0.05], side: 1 },   // night
+    { p: 0.61, m: [88, 102, 156], g: [120, 140, 220, 0.05], side: -1 },
+    { p: 0.67, m: [172, 150, 192], g: [255, 150, 175, 0.16], side: -1 }, // dawn
+    { p: 0.74, m: [255, 214, 182], g: [255, 176, 110, 0.28], side: -1 }, // sunrise
+    { p: 0.82, m: [255, 250, 240], g: [255, 230, 180, 0.04], side: -1 },
+    { p: 1.00, m: [255, 255, 255], g: [255, 240, 200, 0.0], side: 1 }
+  ];
+  const SKY_STRENGTH = [1, 1, 0.9, 0.45];   // Starlight Dusk is already dark
+  const PHASE_LINES = [
+    { p: 0.30, text: 'The sun dips low — golden hour' },
+    { p: 0.44, text: 'Night settles over the valley' },
+    { p: 0.66, text: 'First light on the horizon' },
+    { p: 0.76, text: 'The sun rises — a new day' }
+  ];
+  const WEATHER_LINES = {
+    clear: 'The sky clears',
+    clouds: 'Clouds drift overhead',
+    rain: 'A soft rain begins',
+    snow: 'Snow begins to fall',
+    fog: 'Mist settles over the valley'
+  };
+
+  const sky = {
+    clock: 0.12, daylight: 1, night: 0,
+    weather: 'clear', weatherTimer: 14,
+    clouds: 0, rain: 0, snow: 0, fog: 0,
+    nextPhaseLine: 0, drops: [], puffs: []
+  };
+
+  function resetSky() {
+    sky.clock = 0.1 + Math.random() * 0.08;   // early afternoon: sunset arrives ~20s in
+    sky.weather = 'clear';
+    sky.weatherTimer = 10 + Math.random() * 8;
+    sky.clouds = sky.rain = sky.snow = sky.fog = 0;
+    sky.drops = [];
+    sky.puffs = [];
+    sky.nextPhaseLine = PHASE_LINES.findIndex((l) => l.p > sky.clock);
+    if (sky.nextPhaseLine < 0) sky.nextPhaseLine = PHASE_LINES.length;
+  }
+
+  function pickWeather() {
+    const wet = currentBiomeIndex === 2 ? 'snow' : 'rain';
+    const choices = ['clear', 'clouds', 'clouds', wet, wet, 'fog'].filter((w) => w !== sky.weather);
+    return choices[Math.floor(Math.random() * choices.length)];
+  }
+
+  function skyLerp(p) {
+    let i = 0;
+    while (i < SKY_KEYS.length - 2 && SKY_KEYS[i + 1].p <= p) i++;
+    const a = SKY_KEYS[i], b = SKY_KEYS[i + 1];
+    const t = clampNum((p - a.p) / (b.p - a.p), 0, 1);
+    const L = (x, y) => x + (y - x) * t;
+    return {
+      m: a.m.map((v, k) => L(v, b.m[k])),
+      g: a.g.map((v, k) => L(v, b.g[k])),
+      side: t < 0.5 ? a.side : b.side
+    };
+  }
+
+  function updateSky(dt, time, interactive) {
+    const running = gameState === STATE.FLYING || gameState === STATE.LANDING;
+    if (running) {
+      sky.clock = (sky.clock + dt / DAY_CYCLE) % 1;
+      if (sky.clock < 0.05 && sky.nextPhaseLine >= PHASE_LINES.length) sky.nextPhaseLine = 0;
+      const line = PHASE_LINES[sky.nextPhaseLine];
+      if (line && sky.clock >= line.p && sky.clock < line.p + 0.05) {
+        sky.nextPhaseLine++;
+        if (interactive) whisper(line.text);
+      }
+      sky.weatherTimer -= dt;
+      if (sky.weatherTimer <= 0) {
+        sky.weather = pickWeather();
+        sky.weatherTimer = 16 + Math.random() * 14;
+        if (interactive) whisper(WEATHER_LINES[sky.weather]);
+      }
+    }
+    const w = running ? sky.weather : 'clear';
+    const ease = (cur, on) => cur + ((on ? 1 : 0) - cur) * Math.min(1, dt / 4);
+    sky.rain = ease(sky.rain, w === 'rain');
+    sky.snow = ease(sky.snow, w === 'snow');
+    sky.fog = ease(sky.fog, w === 'fog');
+    sky.clouds = ease(sky.clouds, w === 'clouds' || w === 'rain' || w === 'snow');
+    audio.setRain(sky.rain);
+
+    // Night = how far into the dark part of the day we are (for glows & the sun corner)
+    const L = skyLerp(running ? sky.clock : 0.12);
+    const lum = (L.m[0] + L.m[1] + L.m[2]) / 765;
+    const strength = SKY_STRENGTH[currentBiomeIndex] || 1;
+    sky.night = clampNum((0.85 - lum) / 0.45, 0, 1) * strength;
+    sky.daylight = 1 - sky.night * 0.9;
+
+    // Rain drops / snowflakes in screen space (they fall toward the ground, i.e. toward screen centre)
+    const want = Math.round(sky.rain * 95 + sky.snow * 110);
+    while (sky.drops.length < want) {
+      sky.drops.push({ x: Math.random() * width, y: Math.random() * height, life: Math.random(), speed: 0.8 + Math.random() * 0.6, seed: Math.random() * 10 });
+    }
+    if (sky.drops.length > want) sky.drops.length = want;
+    for (const d of sky.drops) {
+      d.life += dt * d.speed * (sky.snow > sky.rain ? 0.35 : 1.6);
+      if (d.life >= 1) { d.life = 0; d.x = Math.random() * width; d.y = Math.random() * height; }
+    }
+    // Rain dimples on the river near the plane
+    if (sky.rain > 0.3 && interactive && Math.random() < sky.rain * 12 * dt) {
+      const rx = camera.x + (Math.random() - 0.5) * width / camera.zoom;
+      const ry = camera.y + (Math.random() - 0.5) * height / camera.zoom;
+      if (Math.abs(rx - riverCenterAt(ry)) < riverWidthAt(ry) - 6 && wakeRipples.length < 90) {
+        wakeRipples.push({ x: rx, y: ry, age: 0, maxAge: 0.9, maxR: 9 + Math.random() * 6 });
+      }
+    }
+    // Wispy cloud puffs passing beneath the drone
+    const wantPuffs = Math.round((sky.clouds * 0.6 + sky.fog) * 7);
+    while (sky.puffs.length < wantPuffs) {
+      sky.puffs.push({ x: Math.random() * width, y: -200 - Math.random() * height * 0.6, r: 120 + Math.random() * 160, a: 0 });
+    }
+    for (let i = sky.puffs.length - 1; i >= 0; i--) {
+      const pf = sky.puffs[i];
+      pf.y += (running ? plane.speed * 0.55 * camera.zoom : 30) * dt;
+      pf.x += 8 * dt;
+      pf.a = Math.min(1, pf.a + dt * 0.5);
+      if (pf.y - pf.r > height) {
+        if (sky.puffs.length > wantPuffs) sky.puffs.splice(i, 1);
+        else { pf.y = -pf.r - Math.random() * 300; pf.x = Math.random() * width; pf.a = 0; }
+      }
+    }
+  }
+
+  // Large soft cloud shadows drifting across the valley (world space)
+  function drawCloudShadows(time) {
+    const amt = sky.clouds * (1 - sky.night * 0.8);
+    if (amt < 0.02) return;
+    const cell = 900;
+    const halfW = (width / camera.zoom) * 0.6 + cell;
+    const halfH = (height / camera.zoom) * 0.7 + cell;
+    const drift = time * 26;
+    const c0 = Math.floor((camera.x - drift - halfW) / cell), c1 = Math.ceil((camera.x - drift + halfW) / cell);
+    const r0 = Math.floor((camera.y - halfH) / cell), r1 = Math.ceil((camera.y + halfH) / cell);
+    for (let cx = c0; cx <= c1; cx++) {
+      for (let cy = r0; cy <= r1; cy++) {
+        const h = hash1D(cx * 41.3 + cy * 17.9);
+        if (h > 0.6) continue;
+        const x = cx * cell + drift + hash1D(cx * 3.7 + cy) * cell * 0.6;
+        const y = cy * cell + hash1D(cy * 5.3 + cx) * cell * 0.6;
+        for (let k = 0; k < 3; k++) {
+          const ox = (hash1D(h * 90 + k) - 0.5) * 360, oy = (hash1D(h * 70 + k * 3) - 0.5) * 220;
+          const r = 170 + hash1D(h * 30 + k) * 160;
+          const g = ctx.createRadialGradient(x + ox, y + oy, 0, x + ox, y + oy, r);
+          g.addColorStop(0, `rgba(25, 35, 45, ${(0.16 * amt).toFixed(3)})`);
+          g.addColorStop(1, 'rgba(25, 35, 45, 0)');
+          ctx.fillStyle = g;
+          ctx.fillRect(x + ox - r, y + oy - r, r * 2, r * 2);
+        }
+      }
+    }
+  }
+
+  // Screen-space lighting, glow, precipitation and fog
+  function drawSkyOverlay(time, anchorYRatio) {
+    const running = gameState === STATE.FLYING || gameState === STATE.LANDING;
+    const L = skyLerp(running ? sky.clock : 0.12);
+    const strength = SKY_STRENGTH[currentBiomeIndex] || 1;
+    const px = width * 0.5 + (plane.x - camera.x) * camera.zoom;
+    const py = height * anchorYRatio + (plane.y - camera.y) * camera.zoom;
+
+    // Overcast / rain darkens and cools the light
+    const overcast = sky.clouds * 0.12 + sky.rain * 0.14 + sky.snow * 0.04;
+    const m = L.m.map((v, k) => {
+      let c = 255 + (v - 255) * strength;
+      c *= 1 - overcast * (k === 2 ? 0.6 : 1);
+      return Math.round(clampNum(c, 0, 255));
+    });
+    if (m[0] < 254 || m[1] < 254 || m[2] < 254) {
+      ctx.globalCompositeOperation = 'multiply';
+      ctx.fillStyle = `rgb(${m[0]}, ${m[1]}, ${m[2]})`;
+      ctx.fillRect(0, 0, width, height);
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    // Low sun glow from one side at sunset (right) / sunrise (left)
+    const ga = L.g[3] * strength * (1 - sky.clouds * 0.5);
+    if (ga > 0.01) {
+      const gx = L.side > 0 ? width * 1.05 : -width * 0.05;
+      const grad = ctx.createRadialGradient(gx, height * 0.3, 10, gx, height * 0.3, Math.max(width, height) * 0.95);
+      grad.addColorStop(0, `rgba(${L.g[0] | 0}, ${L.g[1] | 0}, ${L.g[2] | 0}, ${ga.toFixed(3)})`);
+      grad.addColorStop(1, `rgba(${L.g[0] | 0}, ${L.g[1] | 0}, ${L.g[2] | 0}, 0)`);
+      ctx.globalCompositeOperation = 'screen';
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, width, height);
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    // At night the paper plane catches a little moonlight so it stays easy to follow
+    if (sky.night > 0.05) {
+      const glow = ctx.createRadialGradient(px, py, 0, px, py, 90);
+      glow.addColorStop(0, `rgba(225, 235, 255, ${(0.45 * sky.night).toFixed(3)})`);
+      glow.addColorStop(0.35, `rgba(225, 235, 255, ${(0.18 * sky.night).toFixed(3)})`);
+      glow.addColorStop(1, 'rgba(220, 230, 255, 0)');
+      ctx.globalCompositeOperation = 'screen';
+      ctx.fillStyle = glow;
+      ctx.fillRect(px - 90, py - 90, 180, 180);
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    // Cloud puffs passing between the drone and the plane
+    for (const pf of sky.puffs) {
+      const a = pf.a * (0.16 * sky.clouds + 0.3 * sky.fog) * (1 - sky.night * 0.5);
+      if (a < 0.01) continue;
+      const g = ctx.createRadialGradient(pf.x, pf.y, 0, pf.x, pf.y, pf.r);
+      g.addColorStop(0, `rgba(255, 255, 255, ${a.toFixed(3)})`);
+      g.addColorStop(1, 'rgba(255, 255, 255, 0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(pf.x - pf.r, pf.y - pf.r, pf.r * 2, pf.r * 2);
+    }
+
+    // Rain streaks / snowflakes heading down toward the ground (screen centre is straight down)
+    if (sky.drops.length) {
+      const vx = width * 0.5, vy = height * anchorYRatio;
+      if (sky.rain >= sky.snow) {
+        // Short streaks, slanted by a steady wind, that shrink as they fall toward the ground
+        ctx.strokeStyle = sky.night > 0.5 ? 'rgba(200, 215, 240, 0.3)' : 'rgba(240, 248, 255, 0.45)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (const d of sky.drops) {
+          const k = d.life * 0.3;
+          const x = d.x + (vx - d.x) * k, y = d.y + (vy - d.y) * k;
+          const len = 9 * (1 - d.life * 0.7);
+          ctx.moveTo(x, y);
+          ctx.lineTo(x - len * 0.35, y - len);
+        }
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+        for (const d of sky.drops) {
+          const k = d.life * 0.45;
+          const x = d.x + (vx - d.x) * k + Math.sin(time * 1.5 + d.seed) * 10;
+          const y = d.y + (vy - d.y) * k;
+          ctx.globalAlpha = Math.sin(d.life * Math.PI);
+          ctx.beginPath(); ctx.arc(x, y, 1.6 + (1 - d.life) * 1.6, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // Fog: thick at the edges, thinning around the plane so you can still steer
+    if (sky.fog > 0.02) {
+      const fogCol = sky.night > 0.5 ? '120, 135, 165' : '232, 238, 240';
+      const r = Math.max(width, height) * 0.75;
+      const g = ctx.createRadialGradient(px, py, 70, px, py, r);
+      g.addColorStop(0, `rgba(${fogCol}, ${(0.12 * sky.fog).toFixed(3)})`);
+      g.addColorStop(1, `rgba(${fogCol}, ${(0.7 * sky.fog).toFixed(3)})`);
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, width, height);
     }
   }
 
