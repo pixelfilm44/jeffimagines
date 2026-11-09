@@ -16,6 +16,7 @@
 
   const statDistance = document.getElementById('stat-distance');
   const statAltitude = document.getElementById('stat-altitude');
+  const statAltitudeLabel = document.getElementById('stat-altitude-label');
   const statThermals = document.getElementById('stat-thermals');
 
   const finalDistance = document.getElementById('final-distance');
@@ -579,6 +580,12 @@
   let cranesFound = 0;
   let cranesTotal = loadCraneTotal();
 
+  // Above this altitude the plane glides over every tree (and everything else)
+  const TREELINE = 78;
+  let treeHaze = 0;            // 0..1 eased "trees are far below you" look
+  let aboveTrees = false;
+  let treeFlyoverShown = false;
+
   let spawnedUpToY = 400; // We generate world chunks ahead (as Y decreases)
 
   function resize() {
@@ -643,6 +650,9 @@
     fireflyClusters = [];
     cranes = [];
     cranesFound = 0;
+    treeHaze = 0;
+    aboveTrees = false;
+    treeFlyoverShown = false;
     craneTargets = [];
     let craneY = -1100 - Math.random() * 500;
     for (let k = 0; k < CRANES_PER_RUN; k++) {
@@ -775,18 +785,7 @@
         } else {
           // On the hills & meadows: Tall Pine/Sakura clusters, Autumn Groves, Stone Pillars, or Windmills
           if (roll < 0.68) {
-            const isAutumn = Math.random() < 0.28;
-            const treeRadius = 36 + Math.random() * 20;
-            obstacles.push({
-              type: 'tree',
-              x: ox,
-              y: oy,
-              radius: treeRadius,
-              hitRadius: treeRadius * 0.66,
-              height: 58 + Math.random() * 18,
-              isAutumn,
-              swayPhase: Math.random() * Math.PI * 2
-            });
+            obstacles.push(makeTree(ox, oy));
           } else if (roll < 0.85) {
             obstacles.push({
               type: 'rock',
@@ -825,7 +824,7 @@
       }
 
       // 3. Swirling Wind Circles (Collecting a circle releases an upward gust of air that lifts the plane & prolongs flight)
-      if (bandY < -200 && Math.random() < 0.65) {
+      if (bandY < -200 && Math.random() < 0.42) {
         const tx = plane.x + (Math.random() - 0.5) * 820;
         const ty = bandY - Math.random() * 90;
         // Ensure circle isn't inside an obstacle
@@ -1526,7 +1525,19 @@
         checkBlossomGraze(ob);
       }
 
-      if (!zenMode && plane.invulnerableTimer <= 0 && plane.z < ob.height + 12) {
+      // Trees can be cleared above the treeline; other obstacles just above their own height
+      const clearAlt = ob.type === 'tree' ? TREELINE : ob.height + 12;
+      if (ob.type === 'tree' && plane.z >= clearAlt && !ob.overflown &&
+          Math.hypot(plane.x - ob.x, plane.y - ob.y) < ob.hitRadius + 11) {
+        ob.overflown = true;
+        ob.swayVel = (ob.swayVel || 0) + (Math.random() < 0.5 ? -70 : 70);
+        audio.playPluck(392, 0.9, 0.018);
+        if (!treeFlyoverShown) {
+          treeFlyoverShown = true;
+          whisper('Gliding right over the treetops');
+        }
+      }
+      if (!zenMode && plane.invulnerableTimer <= 0 && plane.z < clearAlt) {
         const dist = Math.hypot(plane.x - ob.x, plane.y - ob.y);
         if (dist < ob.hitRadius + 11) {
           const reasonMap = {
@@ -1625,6 +1636,18 @@
     statDistance.textContent = `${Math.floor(plane.distanceFlown).toLocaleString()} m`;
     statAltitude.textContent = `${Math.round(plane.z)} m`;
     statAltitude.parentElement.classList.toggle('low-altitude', plane.z < 15);
+    // Treeline: crossing it is announced, and the HUD + trees change look while above
+    if (!aboveTrees && plane.z >= TREELINE) {
+      aboveTrees = true;
+      whisper('Above the treetops — glide right over them');
+      audio.playPluck(659.25, 1.2, 0.022);
+    } else if (aboveTrees && plane.z < TREELINE - 0.5) {
+      aboveTrees = false;
+      whisper('Back down among the treetops');
+    }
+    statAltitude.parentElement.classList.toggle('above-trees', aboveTrees);
+    if (statAltitudeLabel) statAltitudeLabel.textContent = aboveTrees ? 'ABOVE TREES' : 'ALTITUDE';
+    treeHaze += ((aboveTrees ? 1 : 0) - treeHaze) * Math.min(1, (aboveTrees ? 2.2 : 6) * dt);
     statThermals.textContent = String(plane.thermalsCaught);
   }
 
@@ -1701,10 +1724,11 @@
     drawThermals(biome, time);
 
     // 7. Cast Shadow of the Paper Airplane on the Valley Floor
-    drawAirplaneShadow();
+    if (treeHaze < 0.5) drawAirplaneShadow();
 
     // 8. 3D-Projected Obstacles (Sorted back-to-front by depth/height for natural overlap)
     drawObstacles3D(biome, time);
+    if (treeHaze >= 0.5) drawAirplaneShadow();
     drawHiddenCranes(time);
 
     drawRainbows(time);
@@ -2279,43 +2303,186 @@
     }
   }
 
+
+  // ===================================================================
+  // TREES — species, seeded shapes and sun-lit shading (cached as Path2D)
+  // ===================================================================
+  const TREE_MIX = [
+    { broad: 0.55, conifer: 0.3 },   // Golden Valley
+    { broad: 0.62, conifer: 0.22 },  // Sakura Highlands
+    { broad: 0.2, conifer: 0.7 },    // Nordic Fjord
+    { broad: 0.45, conifer: 0.4 }    // Starlight Dusk
+  ];
+
+  function makeTree(x, y) {
+    const mix = TREE_MIX[currentBiomeIndex] || TREE_MIX[0];
+    const r = Math.random();
+    const species = r < mix.broad ? 'broad' : r < mix.broad + mix.conifer ? 'conifer' : 'poplar';
+    let radius, height;
+    if (species === 'broad') { radius = 34 + Math.random() * 26; height = 52 + Math.random() * 18; }
+    else if (species === 'conifer') { radius = 28 + Math.random() * 20; height = 62 + Math.random() * 20; }
+    else { radius = 19 + Math.random() * 9; height = 80 + Math.random() * 15; }
+    return {
+      type: 'tree', species, x, y, radius,
+      hitRadius: radius * (species === 'conifer' ? 0.62 : 0.66),
+      height,
+      isAutumn: species !== 'conifer' && Math.random() < 0.28,
+      tint: (Math.random() - 0.5) * 0.22,
+      seed: Math.floor(Math.random() * 1e9),
+      swayPhase: Math.random() * Math.PI * 2
+    };
+  }
+
+  function lumpyBlob(path, cx, cy, r, lumps, rnd, lumpSize = 0.36) {
+    path.moveTo(cx + r * 0.62, cy);
+    path.arc(cx, cy, r * 0.62, 0, Math.PI * 2);
+    const off = rnd() * Math.PI * 2;
+    for (let i = 0; i < lumps; i++) {
+      const a = off + (i / lumps) * Math.PI * 2 + (rnd() - 0.5) * 0.4;
+      const d = r * (0.56 + rnd() * 0.14);
+      const lr = r * (lumpSize * (0.8 + rnd() * 0.4));
+      const lx = cx + Math.cos(a) * d, ly = cy + Math.sin(a) * d;
+      path.moveTo(lx + lr, ly);
+      path.arc(lx, ly, lr, 0, Math.PI * 2);
+    }
+  }
+
+  function starPath(path, cx, cy, rOut, rIn, spikes, rot, rnd) {
+    for (let i = 0; i <= spikes * 2; i++) {
+      const a = rot + (i / (spikes * 2)) * Math.PI * 2;
+      const rr = (i % 2 === 0 ? rOut * (0.88 + rnd() * 0.16) : rIn * (0.9 + rnd() * 0.2));
+      const x = cx + Math.cos(a) * rr, y = cy + Math.sin(a) * rr;
+      if (i === 0) path.moveTo(x, y); else path.lineTo(x, y);
+    }
+    path.closePath();
+  }
+
+  function buildTreeModel(ob, biome) {
+    const rnd = seededRand(ob.seed);
+    const base = ob.species === 'conifer' && currentBiomeIndex === 1 ? biome.autumnTreeLayers
+      : ob.isAutumn ? biome.autumnTreeLayers : biome.treeLayers;
+    const pal = base.map((c) => shadeRgb(c, ob.tint, 1));
+    const deep = shadeRgb(base[0], ob.tint - 0.2, 0.75);
+    const glow = shadeRgb(base[3], Math.max(0.15, ob.tint + 0.25), 0.8);
+    const R = ob.radius, H = ob.height;
+    const sunX = 0.7, sunY = -0.7; // light from the upper right
+    const layers = [];
+    let shadow;
+
+    if (ob.species === 'broad') {
+      const t0 = new Path2D(); lumpyBlob(t0, 0, 0, R, 10 + Math.floor(rnd() * 4), rnd, 0.38);
+      layers.push({ path: t0, color: pal[0], h: 0.45 * H, sw: 0, main: true });
+      // Dark gaps between leaf clumps on the shaded side
+      const gaps = new Path2D();
+      for (let i = 0; i < 5; i++) {
+        const a = Math.PI * 0.75 + (rnd() - 0.5) * 1.8;
+        const d = R * (0.36 + rnd() * 0.2), gr = R * (0.07 + rnd() * 0.06);
+        gaps.moveTo(Math.cos(a) * d + gr, Math.sin(a) * d);
+        gaps.arc(Math.cos(a) * d, Math.sin(a) * d, gr, 0, Math.PI * 2);
+      }
+      layers.push({ path: gaps, color: deep, h: 0.5 * H, sw: 0.1 });
+      const t1 = new Path2D(); lumpyBlob(t1, R * 0.07, -R * 0.07, R * 0.74, 8 + Math.floor(rnd() * 3), rnd, 0.34);
+      layers.push({ path: t1, color: pal[1], h: 0.7 * H, sw: 0.4, main: true });
+      const t2 = new Path2D();
+      const clumps = 4 + Math.floor(rnd() * 3);
+      for (let c = 0; c < clumps; c++) {
+        const a = Math.atan2(sunY, sunX) + (rnd() - 0.5) * 2.6;
+        const d = R * (0.08 + rnd() * 0.36);
+        const cx = R * 0.1 + Math.cos(a) * d, cy = -R * 0.1 + Math.sin(a) * d;
+        for (let k = 0; k < 3; k++) {
+          const lr = R * (0.12 + rnd() * 0.1);
+          const lx = cx + (rnd() - 0.5) * R * 0.22, ly = cy + (rnd() - 0.5) * R * 0.22;
+          t2.moveTo(lx + lr, ly); t2.arc(lx, ly, lr, 0, Math.PI * 2);
+        }
+      }
+      layers.push({ path: t2, color: pal[2], h: 0.88 * H, sw: 0.75, main: true });
+      const specks = new Path2D();
+      for (let i = 0; i < 9; i++) {
+        const a = Math.atan2(sunY, sunX) + (rnd() - 0.5) * 1.9;
+        const d = R * (0.1 + rnd() * 0.42), sr = R * (0.045 + rnd() * 0.05);
+        specks.moveTo(R * 0.12 + Math.cos(a) * d + sr, -R * 0.12 + Math.sin(a) * d);
+        specks.arc(R * 0.12 + Math.cos(a) * d, -R * 0.12 + Math.sin(a) * d, sr, 0, Math.PI * 2);
+      }
+      layers.push({ path: specks, color: glow, h: H, sw: 1.05 });
+      shadow = t0;
+    } else if (ob.species === 'conifer') {
+      const tiers = 5;
+      const spikes = 9 + Math.floor(rnd() * 5);
+      for (let t = 0; t < tiers; t++) {
+        const k = t / (tiers - 1);
+        const ro = R * (1 - k * 0.78);
+        const p = new Path2D();
+        starPath(p, 0, 0, ro, ro * (0.55 + rnd() * 0.1), spikes - Math.floor(k * 3), rnd() * Math.PI, rnd);
+        layers.push({ path: p, color: pal[Math.min(3, Math.round(k * 3))], h: (0.25 + k * 0.75) * H, sw: k * 0.9, main: true });
+        // sunlit needles on the upper-right half of each whorl
+        if (t < tiers - 1) {
+          const hl = new Path2D();
+          starPath(hl, ro * 0.16, -ro * 0.16, ro * 0.62, ro * 0.32, Math.max(5, spikes - 4), rnd() * Math.PI, rnd);
+          layers.push({ path: hl, color: shadeRgb(base[Math.min(3, t + 1)], ob.tint + 0.1, 0.55), h: (0.27 + k * 0.75) * H, sw: k * 0.9 });
+        }
+      }
+      const tip = new Path2D(); tip.arc(0, 0, Math.max(2, R * 0.08), 0, Math.PI * 2);
+      layers.push({ path: tip, color: glow, h: H * 1.02, sw: 1 });
+      shadow = new Path2D(); starPath(shadow, 0, 0, R * 0.95, R * 0.6, spikes, 0, rnd);
+    } else {
+      // Poplar / cypress: a tall slim column of leafy clumps
+      const tiers = 6;
+      for (let t = 0; t < tiers; t++) {
+        const k = t / (tiers - 1);
+        const p = new Path2D();
+        lumpyBlob(p, 0, 0, R * (1 - k * 0.35), 6, rnd, 0.4);
+        layers.push({ path: p, color: pal[Math.min(3, Math.floor(k * 3.6))], h: (0.2 + k * 0.8) * H, sw: k * 1.2, main: true });
+      }
+      const specks = new Path2D();
+      for (let i = 0; i < 5; i++) {
+        const sr = R * (0.08 + rnd() * 0.06);
+        const sx = R * (0.1 + rnd() * 0.3), sy = -R * (0.1 + rnd() * 0.3);
+        specks.moveTo(sx + sr, sy); specks.arc(sx, sy, sr, 0, Math.PI * 2);
+      }
+      layers.push({ path: specks, color: glow, h: H, sw: 1.2 });
+      shadow = new Path2D(); shadow.ellipse(0, 0, R * 0.9, R * 1.6, -0.7, 0, Math.PI * 2);
+    }
+    return { biome: currentBiomeIndex, layers, shadow };
+  }
+
+  function drawTree(ob, biome, time, parallaxX, parallaxY) {
+    if (!ob.model || ob.model.biome !== currentBiomeIndex) ob.model = buildTreeModel(ob, biome);
+    const m = ob.model;
+    const sway = Math.sin(time * 1.6 + ob.swayPhase) * 2.2 + (ob.swayOff || 0);
+
+    // Shadow cast to the lower-left; taller trees throw longer shadows
+    const so = ob.height * 0.28;
+    ctx.fillStyle = 'rgba(18, 30, 28, 0.2)';
+    ctx.translate(ob.x - so * 0.85, ob.y + so);
+    ctx.fill(m.shadow);
+    ctx.translate(-(ob.x - so * 0.85), -(ob.y + so));
+
+    // Above the treeline the canopies take on a soft aerial haze, as if far below the plane
+    const haze = treeHaze > 0.01 ? shadeRgb(biome.meadowLight, 0.2, (0.32 * treeHaze).toFixed(3)) : null;
+    for (let i = 0; i < m.layers.length; i++) {
+      const L = m.layers[i];
+      const tx = ob.x + parallaxX * L.h + sway * L.sw;
+      const ty = ob.y + parallaxY * L.h;
+      ctx.translate(tx, ty);
+      ctx.fillStyle = L.color;
+      ctx.fill(L.path);
+      if (haze && L.main) { ctx.fillStyle = haze; ctx.fill(L.path); }
+      ctx.translate(-tx, -ty);
+    }
+  }
+
   function drawObstacles3D(biome, time) {
+    // Tall things lean less when the drone (and plane) are high above them
+    const depthK = clampNum((CRUISE_ALT + DRONE_HEIGHT) / (Math.max(0, plane.z) + DRONE_HEIGHT), 0.55, 1.4);
     // Drone oblique parallax factor: taller features shift slightly outward from camera center
     // giving a genuine 3D drone-camera perspective from up above!
     for (let i = 0; i < obstacles.length; i++) {
       const ob = obstacles[i];
-      const parallaxX = (ob.x - camera.x) * 0.0022;
-      const parallaxY = (ob.y - camera.y) * 0.0022 - 0.35; // slight upward tilt
+      const parallaxX = (ob.x - camera.x) * 0.0022 * depthK;
+      const parallaxY = ((ob.y - camera.y) * 0.0022 - 0.35) * depthK; // slight upward tilt
 
       if (ob.type === 'tree') {
-        const palette = ob.isAutumn ? biome.autumnTreeLayers : biome.treeLayers;
-        const sway = Math.sin(time * 1.6 + ob.swayPhase) * 2.5 + (ob.swayOff || 0);
-
-        // Ground shadow (cast to the lower-left by the high sun)
-        ctx.fillStyle = 'rgba(18, 30, 28, 0.18)';
-        ctx.beginPath();
-        ctx.ellipse(ob.x - 16, ob.y + 18, ob.radius * 0.95, ob.radius * 0.82, -0.3, 0, Math.PI * 2);
-        ctx.fill();
-
-        // 4 Stacked 3D canopy tiers rising toward the drone camera
-        for (let tier = 0; tier < 4; tier++) {
-          const h = (tier + 1) * (ob.height * 0.25);
-          const tx = ob.x + parallaxX * h + sway * (tier * 0.35);
-          const ty = ob.y + parallaxY * h;
-          const r = ob.radius * (1 - tier * 0.19);
-
-          ctx.fillStyle = palette[tier];
-          ctx.beginPath();
-          ctx.arc(tx, ty, r, 0, Math.PI * 2);
-          ctx.fill();
-        }
-
-        // Subtle sunlit crown highlight
-        const topH = ob.height;
-        ctx.fillStyle = 'rgba(255, 255, 240, 0.18)';
-        ctx.beginPath();
-        ctx.arc(ob.x + parallaxX * topH + 3, ob.y + parallaxY * topH - 3, ob.radius * 0.24, 0, Math.PI * 2);
-        ctx.fill();
+        drawTree(ob, biome, time, parallaxX, parallaxY);
 
       } else if (ob.type === 'rock') {
         // Shadow
@@ -3267,8 +3434,9 @@
     for (let k = 0; k < count; k++) {
       const rank = Math.ceil(k / 2);
       birds.push({
-        ox: side * 95 + (k % 2 ? 1 : -1) * rank * 16 * (k === 0 ? 0 : 1),
-        oy: -30 + rank * 15,
+        // V formation trailing straight behind the plane (plane-local units)
+        lat: k === 0 ? 0 : (k % 2 ? 1 : -1) * rank * 24,
+        back: 40 + rank * 22,
         x: plane.x + side * 560 + k * 10,
         y: plane.y - 200 + k * 12,
         phase: Math.random() * 6
@@ -3290,12 +3458,21 @@
     if (!interactive && escort.t < escort.dur - 2.5) escort.t = escort.dur - 2.5;
 
     const leaving = escort.t > escort.dur - 2.5;
+    // Carry the flock along with the plane so easing only closes the formation gap (no speed lag)
+    const pdx = escort.px === undefined ? 0 : plane.x - escort.px;
+    const pdy = escort.py === undefined ? 0 : plane.y - escort.py;
+    escort.px = plane.x; escort.py = plane.y;
     for (let k = 0; k < escort.birds.length; k++) {
+      if (!leaving) { escort.birds[k].x += pdx; escort.birds[k].y += pdy; }
       const b = escort.birds[k];
       b.phase += dt * 9;
-      const tx = leaving ? plane.x + escort.side * 640 : plane.x + b.ox + Math.sin(time * 0.9 + k) * 6;
-      const ty = leaving ? plane.y - 320 : plane.y + b.oy + Math.cos(time * 1.1 + k) * 5;
-      const ease = Math.min(1, (leaving ? 0.9 : 2.0) * dt);
+      const ps = planeScreenScale();
+      const sinH = Math.sin(plane.heading), cosH = Math.cos(plane.heading);
+      const lat = (b.lat + Math.sin(time * 0.9 + k) * 4) * ps;
+      const back = (b.back + Math.cos(time * 1.1 + k) * 4) * ps;
+      const tx = leaving ? plane.x + escort.side * 640 * ps : plane.x + cosH * lat - sinH * back;
+      const ty = leaving ? plane.y - 320 * ps : plane.y + sinH * lat + cosH * back;
+      const ease = Math.min(1, (leaving ? 0.9 : 3.0) * dt);
       b.x += (tx - b.x) * ease;
       b.y += (ty - b.y) * ease;
     }
@@ -3314,20 +3491,39 @@
 
   function drawEscortBirds(time) {
     if (!escort) return;
-    ctx.strokeStyle = 'rgba(35, 50, 52, 0.7)';
-    ctx.lineWidth = 1.8;
-    ctx.lineCap = 'round';
+    // Birds fly at the plane's altitude, so they share its constant on-screen scale and shadow offset
+    const ps = planeScreenScale() * 1.12;
+    const so = Math.max(1.5, plane.z * 1.25);
     for (let k = 0; k < escort.birds.length; k++) {
       const b = escort.birds[k];
-      const wing = Math.sin(b.phase) * 5;
-      // faint shadow on the valley floor
-      ctx.fillStyle = 'rgba(18, 30, 28, 0.12)';
-      ctx.beginPath(); ctx.ellipse(b.x + 10, b.y + 24, 7, 3, 0, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath();
-      ctx.moveTo(b.x - 8, b.y + 4 + wing * 0.5);
-      ctx.quadraticCurveTo(b.x - 3, b.y - 3, b.x, b.y);
-      ctx.quadraticCurveTo(b.x + 3, b.y - 3, b.x + 8, b.y + 4 + wing * 0.5);
-      ctx.stroke();
+      ctx.fillStyle = 'rgba(18, 30, 28, 0.14)';
+      ctx.beginPath(); ctx.ellipse(b.x - so * 0.85, b.y + so, 11, 4, plane.heading, 0, Math.PI * 2); ctx.fill();
+    }
+    for (let k = 0; k < escort.birds.length; k++) {
+      const b = escort.birds[k];
+      const flap = Math.cos(b.phase);            // -1..1, wings foreshorten as they beat
+      const span = 13 + flap * 4;
+      ctx.save();
+      ctx.translate(b.x, b.y);
+      ctx.rotate(plane.heading);
+      ctx.scale(ps, ps);
+      // wings
+      ctx.fillStyle = flap > 0 ? '#4b5a5c' : '#3a4749';
+      for (const s of [-1, 1]) {
+        ctx.beginPath();
+        ctx.moveTo(0, -3);
+        ctx.quadraticCurveTo(s * span * 0.5, -6 - flap * 2, s * span, -1 + flap * 1.5);
+        ctx.quadraticCurveTo(s * span * 0.55, 1.5, 0, 3);
+        ctx.closePath();
+        ctx.fill();
+      }
+      // body, tail and head
+      ctx.fillStyle = '#2f3b3d';
+      ctx.beginPath(); ctx.ellipse(0, 0.5, 2.4, 6.5, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(-2.4, 5); ctx.lineTo(0, 10); ctx.lineTo(2.4, 5); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#e1a645';
+      ctx.beginPath(); ctx.moveTo(-0.9, -6); ctx.lineTo(0, -8.4); ctx.lineTo(0.9, -6); ctx.closePath(); ctx.fill();
+      ctx.restore();
     }
   }
 

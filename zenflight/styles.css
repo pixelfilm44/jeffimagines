@@ -699,3 +699,15 @@ html, body {
   color: var(--text-secondary);
   text-align: center;
 }
+
+/* Above the treeline: calm green glow on the altitude pill */
+.stat-pill.above-trees {
+  background: rgba(226, 244, 222, 0.92);
+  border-color: rgba(92, 150, 96, 0.6);
+  transition: background 0.4s ease, border-color 0.4s ease;
+}
+
+.stat-pill.above-trees .stat-value,
+.stat-pill.above-trees .stat-label {
+  color: #3f7a45;
+}
