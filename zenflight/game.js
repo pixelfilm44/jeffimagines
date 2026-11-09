@@ -519,6 +519,7 @@
   // on screen while the ground shrinks as the plane climbs and grows as it sinks.
   const DRONE_HEIGHT = 60;   // drone's height above the plane (same units as plane.z)
   const CRUISE_ALT = 42;     // altitude at which the ground is drawn at base zoom
+  const START_ALT = 30;      // the plane is flipped in low, well under the treeline
   function droneZoomFor(z) {
     const base = getBaseZoom();
     const k = (CRUISE_ALT + DRONE_HEIGHT) / (Math.max(0, z) + DRONE_HEIGHT);
@@ -586,6 +587,10 @@
   let aboveTrees = false;
   let treeFlyoverShown = false;
 
+  // Hot air balloons drifting high above the treeline
+  let skyBalloons = [];
+  let skyBalloonWarned = false;
+
   let spawnedUpToY = 400; // We generate world chunks ahead (as Y decreases)
 
   function resize() {
@@ -602,7 +607,7 @@
   function resetWorld() {
     plane.x = riverCenterAt(0) + 90;
     plane.y = 0;
-    plane.z = 42;
+    plane.z = START_ALT;
     plane.speed = 235;
     plane.heading = 0;
     plane.targetHeading = 0;
@@ -652,6 +657,8 @@
     cranesFound = 0;
     treeHaze = 0;
     aboveTrees = false;
+    skyBalloons = [];
+    skyBalloonWarned = false;
     treeFlyoverShown = false;
     craneTargets = [];
     let craneY = -1100 - Math.random() * 500;
@@ -862,6 +869,7 @@
 
       spawnLife(bandY);
       placeHiddenCranes(bandY);
+      spawnSkyBalloon(bandY);
 
       spawnedUpToY -= 140;
     }
@@ -1249,7 +1257,7 @@
       const ease = 1 - Math.pow(1 - launchProgress, 3);
       const baseZoom = getBaseZoom();
       plane.y -= plane.speed * (0.65 + 0.35 * ease) * dt;
-      plane.z = 24 + Math.sin(launchProgress * Math.PI) * 28 + ease * 18;
+      plane.z = 16 + Math.sin(launchProgress * Math.PI) * 18 + ease * (START_ALT - 16);
       plane.pitch = Math.sin(launchProgress * Math.PI * 2) * 0.35 * (1 - ease);
       camera.zoom = baseZoom * (1.48 - 0.48 * ease);
       camera.x += (plane.x - camera.x) * 6 * dt;
@@ -1435,7 +1443,7 @@
       plane.updraftTimer = Math.max(0, plane.updraftTimer - dt);
       const gustStrength = Math.sin((plane.updraftTimer / 1.65) * Math.PI * 0.5);
       // Smoothly lift the plane upward so each circle prolongs the journey
-      plane.z += (16.5 * gustStrength + 6.5) * dt;
+      plane.z += (11 * gustStrength + 4.5) * dt;
       plane.speed = Math.min(290, plane.speed + 36 * gustStrength * dt);
       plane.pitch = Math.min(0.28, plane.pitch + 0.8 * dt);
       plane.inGustGlow = Math.min(1, plane.inGustGlow + dt * 5);
@@ -1475,7 +1483,7 @@
         th.collectAnim = 0.01;
         plane.thermalsCaught++;
         // Immediate upward gust impulse + sustained upward draft timer
-        plane.z += 8;
+        plane.z += 5;
         plane.updraftTimer = Math.min(2.6, plane.updraftTimer + 1.65);
         plane.speed += 28;
         plane.pitch = 0.26;
@@ -1561,6 +1569,7 @@
     // Living world: wake petals, river ripples, creatures, rainbow & escort birds
     updateLife(dt, time, true);
     updateHiddenCranes(dt, true);
+    if (updateSkyBalloons(dt, time)) return;
 
     // Update Wind Ribbons
     for (let i = windRibbons.length - 1; i >= 0; i--) {
@@ -1680,6 +1689,7 @@
     creatures = creatures.filter((c) => c.y < cutoffY);
     mists = mists.filter((m) => m.y < cutoffY);
     fireflyClusters = fireflyClusters.filter((f) => f.y < cutoffY);
+    skyBalloons = skyBalloons.filter((b) => b.y < cutoffY + 400);
     cranes = cranes.filter((c) => c.y < cutoffY || (c.found && c.anim < 1));
     rainbows = rainbows.filter((r) => r.y < cutoffY);
   }
@@ -1727,7 +1737,9 @@
     if (treeHaze < 0.5) drawAirplaneShadow();
 
     // 8. 3D-Projected Obstacles (Sorted back-to-front by depth/height for natural overlap)
+    drawSkyBalloonShadows();
     drawObstacles3D(biome, time);
+    drawSkyBalloons(time, 'below');
     if (treeHaze >= 0.5) drawAirplaneShadow();
     drawHiddenCranes(time);
 
@@ -1739,6 +1751,7 @@
 
     // 10. The Paper Airplane (3D Origami Projection with Sun Shading)
     drawPaperAirplane(biome);
+    drawSkyBalloons(time, 'above');
     drawEscortBirds(time);
     drawFireflies(time);
     drawMists(time);
@@ -3961,6 +3974,141 @@
         : cranesFound === 0 ? 'No hidden cranes found — watch for a glint'
         : `${cranesFound} of ${CRANES_PER_RUN} hidden cranes found`;
       craneNote.textContent = `${lead} · ${cranesTotal} collected all-time`;
+    }
+  }
+
+
+  // ===================================================================
+  // SKY BALLOONS — big hot air balloons drifting above the treeline
+  // ===================================================================
+  const SKY_BALLOON_COLORS = [
+    ['#e8643c', '#ffd27a'], ['#3f7fc4', '#f4f1e8'], ['#c23c64', '#ffe0ea'],
+    ['#2f9a8a', '#fff1c9'], ['#8a5cc2', '#f2e6ff'], ['#e0a72e', '#7a3f22']
+  ];
+
+  function spawnSkyBalloon(bandY) {
+    if (bandY > -1200 || Math.random() > 0.2) return;
+    const alt = TREELINE + 8 + Math.random() * 42;
+    skyBalloons.push({
+      x: plane.x + (Math.random() - 0.5) * 1100,
+      y: bandY - Math.random() * 120,
+      alt,
+      vx: (Math.random() - 0.5) * 24,
+      radius: 44 + Math.random() * 18,
+      colors: SKY_BALLOON_COLORS[Math.floor(Math.random() * SKY_BALLOON_COLORS.length)],
+      gores: 10 + 2 * Math.floor(Math.random() * 3),
+      phase: Math.random() * Math.PI * 2
+    });
+  }
+
+  // Perspective from the drone (DRONE_HEIGHT above the plane): things higher up look bigger
+  // and spread away from the plane; returns null when an object is at or above the drone.
+  function altProject(x, y, alt) {
+    const droneAlt = plane.z + DRONE_HEIGHT;
+    const gap = droneAlt - alt;
+    if (gap < 8) return null;
+    // F = 1 × the plane's own scale at the plane's altitude, bigger above it, smaller below
+    const F = (DRONE_HEIGHT / gap) * planeScreenScale();
+    return { x: plane.x + (x - plane.x) * F, y: plane.y + (y - plane.y) * F, s: F, gap };
+  }
+
+  // Returns true if the flight ended this frame
+  function updateSkyBalloons(dt, time) {
+    for (let i = 0; i < skyBalloons.length; i++) {
+      const b = skyBalloons[i];
+      b.x += b.vx * dt;
+      b.curAlt = b.alt + Math.sin(time * 0.4 + b.phase) * 3;
+    }
+    if (zenMode) return false;
+    for (let i = 0; i < skyBalloons.length; i++) {
+      const b = skyBalloons[i];
+      const dz = plane.z - b.curAlt;           // envelope spans roughly -14 (basket) .. +12 (crown)
+      const d = Math.hypot(plane.x - b.x, plane.y - b.y);
+      if (!skyBalloonWarned && aboveTrees && Math.abs(dz) < 22 && d < 650 && b.y < plane.y) {
+        skyBalloonWarned = true;
+        whisper('Hot air balloons drift up here — steer around them');
+      }
+      if (plane.invulnerableTimer <= 0 && dz > -16 && dz < 12 && d < b.radius * 0.85 + 8) {
+        endFlight('BRUSHED A HIGH-FLYING BALLOON', b);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function drawSkyBalloonShadows() {
+    ctx.fillStyle = 'rgba(15, 25, 28, 0.13)';
+    for (let i = 0; i < skyBalloons.length; i++) {
+      const b = skyBalloons[i];
+      const a = b.curAlt || b.alt;
+      const sx = b.x - a * 1.06, sy = b.y + a * 1.25;
+      if (Math.abs(sy - camera.y) > height / camera.zoom + 300) continue;
+      ctx.beginPath();
+      ctx.ellipse(sx, sy, b.radius * 0.95, b.radius * 0.85, -0.3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawSkyBalloons(time, pass) {
+    for (let i = 0; i < skyBalloons.length; i++) {
+      const b = skyBalloons[i];
+      const a = b.curAlt || b.alt;
+      const above = a > plane.z;
+      if ((pass === 'above') !== above) continue;
+      const env = altProject(b.x, b.y, a);
+      if (!env) continue;
+      if (Math.abs(env.y - camera.y) > height / camera.zoom + 400) continue;
+      // Fade balloons that are nearly up at the drone; soften ones above the plane
+      let alpha = clampNum((env.gap - 8) / 22, 0, 1);
+      if (above) alpha *= clampNum(1 - (a - plane.z - 12) / 30, 0.45, 1);
+      if (alpha <= 0.01) continue;
+      const basket = altProject(b.x, b.y, a - 16);
+      const R = b.radius * env.s;
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      // Ropes + wicker basket hanging beneath the envelope
+      if (basket) {
+        const bs = basket.s;
+        ctx.strokeStyle = 'rgba(90, 70, 50, 0.7)';
+        ctx.lineWidth = Math.max(0.8, 1.1 * bs);
+        ctx.beginPath();
+        for (const [ox, oy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+          ctx.moveTo(basket.x + ox * 5 * bs, basket.y + oy * 4 * bs);
+          ctx.lineTo(env.x + ox * R * 0.45, env.y + oy * R * 0.45);
+        }
+        ctx.stroke();
+        ctx.fillStyle = '#8c6239';
+        ctx.fillRect(basket.x - 6 * bs, basket.y - 5 * bs, 12 * bs, 10 * bs);
+        ctx.fillStyle = '#6b4a2b';
+        ctx.fillRect(basket.x - 4 * bs, basket.y - 3 * bs, 8 * bs, 6 * bs);
+      }
+      // Envelope: alternating gores radiating from the crown, sun-lit from the upper right
+      ctx.translate(env.x, env.y);
+      const spin = b.phase + time * 0.05;
+      for (let g = 0; g < b.gores; g++) {
+        const a0 = spin + (g / b.gores) * Math.PI * 2;
+        const a1 = spin + ((g + 1) / b.gores) * Math.PI * 2;
+        ctx.fillStyle = b.colors[g % 2];
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.arc(0, 0, R, a0, a1);
+        ctx.closePath();
+        ctx.fill();
+      }
+      const shade = ctx.createRadialGradient(R * 0.35, -R * 0.35, R * 0.1, 0, 0, R);
+      shade.addColorStop(0, 'rgba(255, 255, 255, 0.35)');
+      shade.addColorStop(0.55, 'rgba(255, 255, 255, 0)');
+      shade.addColorStop(1, 'rgba(20, 20, 40, 0.3)');
+      ctx.fillStyle = shade;
+      ctx.beginPath(); ctx.arc(0, 0, R, 0, Math.PI * 2); ctx.fill();
+      // Crown vent ring
+      ctx.fillStyle = b.colors[0];
+      ctx.beginPath(); ctx.arc(0, 0, R * 0.16, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
+      ctx.lineWidth = Math.max(1, R * 0.03);
+      ctx.beginPath(); ctx.arc(0, 0, R * 0.16, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
     }
   }
 
