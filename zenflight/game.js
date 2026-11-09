@@ -467,7 +467,7 @@
   const plane = {
     x: 0,
     y: 0,
-    z: 42, // Altitude in meters (12 to 68)
+    z: 42, // Altitude in meters (no upper limit; thermals lift, gravity sinks)
     vx: 0,
     vy: -230,
     speed: 235,
@@ -514,6 +514,20 @@
     tiltSteer: 0     // Normalized -1 to +1 steering input from phone tilt
   };
 
+  // Drone camera: it hovers a fixed distance above the plane, so the plane stays the same size
+  // on screen while the ground shrinks as the plane climbs and grows as it sinks.
+  const DRONE_HEIGHT = 60;   // drone's height above the plane (same units as plane.z)
+  const CRUISE_ALT = 42;     // altitude at which the ground is drawn at base zoom
+  function droneZoomFor(z) {
+    const base = getBaseZoom();
+    const k = (CRUISE_ALT + DRONE_HEIGHT) / (Math.max(0, z) + DRONE_HEIGHT);
+    return base * clampNum(k, 0.38, 1.6);
+  }
+  // Extra scale that keeps objects at the plane's altitude a constant on-screen size
+  function planeScreenScale() {
+    return getBaseZoom() / Math.max(0.05, camera.zoom);
+  }
+
   function getBaseZoom() {
     // On narrow mobile screens, zoom out slightly so the player can see more of the valley & river ahead
     if (width < 640) {
@@ -523,7 +537,7 @@
   }
 
   // Leaf / petal particle density (1 = original amount)
-  const LEAF_DENSITY = 0.75;
+  const LEAF_DENSITY = 0.5625; // 0.75 × 0.75: two rounds of 25% fewer
 
   // World Entities
   let obstacles = [];
@@ -658,14 +672,17 @@
   }
 
   function generateWorldUntil(targetMinY) {
+    // Widen the generated strip (keeping density) when the drone is high and sees more ground
+    const spread = Math.max(1, ((width / Math.max(0.2, camera.zoom)) * 0.5 + 250) / 1000);
     while (spawnedUpToY > targetMinY) {
       const bandY = spawnedUpToY;
       const rCenter = riverCenterAt(bandY);
       const rWidth = riverWidthAt(bandY);
 
       // 1. Ground Decor (Wildflower clusters, river stones, occasional wooden footbridge)
-      for (let i = 0; i < 6; i++) {
-        const gx = plane.x + (Math.random() - 0.5) * 2100;
+      const decorCount = Math.round(6 * spread);
+      for (let i = 0; i < decorCount; i++) {
+        const gx = plane.x + (Math.random() - 0.5) * 2100 * spread;
         const gy = bandY - Math.random() * 140;
         const distFromRiver = Math.abs(gx - riverCenterAt(gy));
         const rw = riverWidthAt(gy);
@@ -704,10 +721,10 @@
       // 2. Obstacles (Tall Redwoods/Pines, Rocky Spires, Hot Air Balloons, Windmills)
       // Safe Zone near launch (bandY > -420 has fewer center obstacles)
       const isLaunchCorridor = bandY > -420;
-      const obstacleCount = isLaunchCorridor ? 3 : 5 + Math.floor(Math.random() * 3);
+      const obstacleCount = Math.round((isLaunchCorridor ? 3 : 5 + Math.floor(Math.random() * 3)) * spread);
 
       for (let i = 0; i < obstacleCount; i++) {
-        const ox = plane.x + (Math.random() - 0.5) * 1950;
+        const ox = plane.x + (Math.random() - 0.5) * 1950 * spread;
         const oy = bandY - Math.random() * 135;
 
         if (isLaunchCorridor && Math.abs(ox - plane.x) < 190) continue;
@@ -717,7 +734,7 @@
 
         // Avoid overlapping existing obstacles
         let tooClose = false;
-        for (let j = obstacles.length - 1; j >= 0 && j >= obstacles.length - 25; j--) {
+        for (let j = obstacles.length - 1; j >= 0 && j >= obstacles.length - 25 * spread; j--) {
           const other = obstacles[j];
           const dx = other.x - ox;
           const dy = other.y - oy;
@@ -1119,8 +1136,9 @@
       plane.tumbleVy = ny * 58 + forwardY * (plane.speed * 0.22);
 
       // Rustle a few peaceful petals/leaves from the contact point
-      for (let p = 0; p < 6; p++) {
-        const ang = (p / 6) * Math.PI * 2 + Math.random() * 0.4;
+      const crashLeaves = Math.round(8 * LEAF_DENSITY);
+      for (let p = 0; p < crashLeaves; p++) {
+        const ang = (p / crashLeaves) * Math.PI * 2 + Math.random() * 0.4;
         floatingPetals.push({
           x: plane.x + Math.cos(ang) * 10,
           y: plane.y + Math.sin(ang) * 10,
@@ -1374,16 +1392,16 @@
     // Speed & Altitude Gliding Dynamics
     // Banking steeply trades a tiny bit of altitude for speed; thermals lift altitude back up
     const turnDrag = Math.abs(plane.bank) * 0.6;
-    const targetSpeed = 238 + Math.sin(time * 0.8) * 8 + (42 - plane.z) * 0.9;
+    const targetSpeed = 238 + Math.sin(time * 0.8) * 8 + clampNum(42 - plane.z, -40, 42) * 0.9;
     plane.speed += (targetSpeed - plane.speed) * 2.5 * dt;
 
     // Sink rate in normal Mode (+50% faster descent), or buoyant in Zen Mode
-    const sinkRate = zenMode ? 0.35 : (1.725 + turnDrag);
+    const sinkRate = zenMode ? 0.35 : (2.2 + turnDrag);
     plane.z -= sinkRate * dt;
     if (zenMode && plane.z < 36) {
       plane.z += (38 - plane.z) * 1.8 * dt;
     }
-    plane.z = Math.max(0, Math.min(68, plane.z));
+    plane.z = Math.max(0, plane.z);
 
     // Advance Position
     const vx = Math.sin(plane.heading) * plane.speed + plane.breezeVel;
@@ -1401,13 +1419,14 @@
 
     // Camera smoothly tracks ahead of the airplane
     const baseZoom = getBaseZoom();
-    const lookAheadY = width < 640 ? Math.min(height * 0.26, 185) : Math.min(height * 0.22, 165);
-    const targetCamX = plane.x + Math.sin(plane.heading) * 65;
+    // Look-ahead is a fixed screen distance, so convert it into world units at the current zoom
+    const lookAheadY = (width < 640 ? Math.min(height * 0.26, 185) : Math.min(height * 0.22, 165)) * planeScreenScale();
+    const targetCamX = plane.x + Math.sin(plane.heading) * 65 * planeScreenScale();
     const targetCamY = plane.y - lookAheadY;
     camera.x += (targetCamX - camera.x) * Math.min(1, 5.2 * dt);
     camera.y += (targetCamY - camera.y) * Math.min(1, 8.0 * dt);
-    const targetZoom = baseZoom * (0.96 + (68 - plane.z) * 0.0022);
-    camera.zoom += (targetZoom - camera.zoom) * 3 * dt;
+    const targetZoom = droneZoomFor(plane.z);
+    camera.zoom += (targetZoom - camera.zoom) * Math.min(1, 3 * dt);
 
     // Record Wingtip Trails
     recordWingTrails();
@@ -1417,7 +1436,7 @@
       plane.updraftTimer = Math.max(0, plane.updraftTimer - dt);
       const gustStrength = Math.sin((plane.updraftTimer / 1.65) * Math.PI * 0.5);
       // Smoothly lift the plane upward so each circle prolongs the journey
-      plane.z = Math.min(68, plane.z + (16.5 * gustStrength + 6.5) * dt);
+      plane.z += (16.5 * gustStrength + 6.5) * dt;
       plane.speed = Math.min(290, plane.speed + 36 * gustStrength * dt);
       plane.pitch = Math.min(0.28, plane.pitch + 0.8 * dt);
       plane.inGustGlow = Math.min(1, plane.inGustGlow + dt * 5);
@@ -1457,7 +1476,7 @@
         th.collectAnim = 0.01;
         plane.thermalsCaught++;
         // Immediate upward gust impulse + sustained upward draft timer
-        plane.z = Math.min(68, plane.z + 8);
+        plane.z += 8;
         plane.updraftTimer = Math.min(2.6, plane.updraftTimer + 1.65);
         plane.speed += 28;
         plane.pitch = 0.26;
@@ -1479,8 +1498,9 @@
             curveFreq: 7
           });
         }
-        for (let p = 0; p < 11; p++) {
-          const ang = (p / 11) * Math.PI * 2;
+        const burstLeaves = Math.round(14 * LEAF_DENSITY);
+        for (let p = 0; p < burstLeaves; p++) {
+          const ang = (p / burstLeaves) * Math.PI * 2;
           floatingPetals.push({
             x: th.x + Math.cos(ang) * 16,
             y: th.y + Math.sin(ang) * 16,
@@ -1506,7 +1526,7 @@
         checkBlossomGraze(ob);
       }
 
-      if (!zenMode && plane.invulnerableTimer <= 0) {
+      if (!zenMode && plane.invulnerableTimer <= 0 && plane.z < ob.height + 12) {
         const dist = Math.hypot(plane.x - ob.x, plane.y - ob.y);
         if (dist < ob.hitRadius + 11) {
           const reasonMap = {
@@ -1586,16 +1606,18 @@
       }
 
       // Wrap around camera view
-      if (p.y > camera.y + height * 0.75) {
-        p.y = camera.y - height * 0.75;
-        p.x = camera.x + (Math.random() - 0.5) * width * 1.4;
+      const vw = width / camera.zoom;
+      const vh = height / camera.zoom;
+      if (p.y > camera.y + vh * 0.75) {
+        p.y = camera.y - vh * 0.75;
+        p.x = camera.x + (Math.random() - 0.5) * vw * 1.4;
       }
-      if (p.x < camera.x - width * 0.8) p.x += width * 1.6;
-      if (p.x > camera.x + width * 0.8) p.x -= width * 1.6;
+      if (p.x < camera.x - vw * 0.8) p.x += vw * 1.6;
+      if (p.x > camera.x + vw * 0.8) p.x -= vw * 1.6;
     }
 
     // Generate new terrain ahead & prune behind
-    const viewSpanY = height / Math.max(0.5, camera.zoom);
+    const viewSpanY = height / Math.max(0.2, camera.zoom);
     generateWorldUntil(camera.y - viewSpanY * 1.35);
     cleanupWorldBehind(camera.y + viewSpanY * 0.95);
 
@@ -1662,6 +1684,7 @@
 
     // 2. Topographic Rolling Meadow Contours
     drawTopographicHills(biome, viewTop, viewBottom);
+    drawGrass(biome, viewTop, viewBottom, time);
 
     // 3. Winding River & Shimmering Currents
     drawMeanderingRiver(biome, viewTop, viewBottom, time);
@@ -1723,6 +1746,7 @@
     const endY = Math.ceil(viewBottom / step) * step;
 
     // Left and right rolling hill terraces flanking the river valley
+    const reach = (width / camera.zoom) * 0.6 + 900;
     for (let layer = 0; layer < 2; layer++) {
       ctx.fillStyle = layer === 0 ? biome.meadowLight : biome.meadowDark;
 
@@ -1732,11 +1756,11 @@
         const rCenter = riverCenterAt(y);
         const offset = 260 + layer * 175 + Math.sin(y * 0.004 + layer * 2) * 75;
         const x = rCenter - offset;
-        if (y === startY) ctx.moveTo(x - 1400, y);
+        if (y === startY) ctx.moveTo(x - reach, y);
         ctx.lineTo(x, y);
       }
-      ctx.lineTo(camera.x - 2200, endY);
-      ctx.lineTo(camera.x - 2200, startY);
+      ctx.lineTo(camera.x - reach, endY);
+      ctx.lineTo(camera.x - reach, startY);
       ctx.closePath();
       ctx.fill();
 
@@ -1746,11 +1770,11 @@
         const rCenter = riverCenterAt(y);
         const offset = 260 + layer * 175 + Math.cos(y * 0.0038 + layer) * 80;
         const x = rCenter + offset;
-        if (y === startY) ctx.moveTo(x + 1400, y);
+        if (y === startY) ctx.moveTo(x + reach, y);
         ctx.lineTo(x, y);
       }
-      ctx.lineTo(camera.x + 2200, endY);
-      ctx.lineTo(camera.x + 2200, startY);
+      ctx.lineTo(camera.x + reach, endY);
+      ctx.lineTo(camera.x + reach, startY);
       ctx.closePath();
       ctx.fill();
     }
@@ -1766,6 +1790,173 @@
   function mixRgb(a, b, t, alpha = 1) {
     const A = hexRgb(a), B = hexRgb(b);
     return `rgba(${Math.round(A[0] + (B[0] - A[0]) * t)}, ${Math.round(A[1] + (B[1] - A[1]) * t)}, ${Math.round(A[2] + (B[2] - A[2]) * t)}, ${alpha})`;
+  }
+
+
+  // ===================================================================
+  // GRASS — tiled blade texture, soft patches, wind sheen and close-up tufts
+  // ===================================================================
+  const grassCache = {};
+  function shadeRgb(hex, amt, alpha) {
+    const c = hexRgb(hex);
+    const f = (v) => Math.round(clampNum(amt >= 0 ? v + (255 - v) * amt : v * (1 + amt), 0, 255));
+    return `rgba(${f(c[0])}, ${f(c[1])}, ${f(c[2])}, ${alpha})`;
+  }
+
+  function seededRand(seed) {
+    let t = seed >>> 0;
+    return () => {
+      t = (t + 0x6D2B79F5) >>> 0;
+      let r = Math.imul(t ^ (t >>> 15), 1 | t);
+      r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+      return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function buildGrassTextures(biome, idx) {
+    const rnd = seededRand(1234 + idx * 77);
+    const night = idx === 3;
+
+    // Fine blade texture (tileable)
+    const T = 256;
+    const blades = document.createElement('canvas');
+    blades.width = blades.height = T;
+    const g = blades.getContext('2d');
+    g.lineCap = 'round';
+    const tones = [
+      shadeRgb(biome.hillridge, -0.12, night ? 0.35 : 0.30),
+      shadeRgb(biome.hillridge, 0.0, night ? 0.30 : 0.26),
+      shadeRgb(biome.meadowDark, -0.05, 0.30),
+      shadeRgb(biome.meadowLight, 0.22, night ? 0.12 : 0.32)
+    ];
+    for (let i = 0; i < 1500; i++) {
+      const x = rnd() * T, y = rnd() * T;
+      const len = 2.5 + rnd() * 5.5;
+      // Blades lean mostly one way, like grass combed by the prevailing breeze
+      const ang = -Math.PI / 2 + 0.55 + (rnd() - 0.5) * 1.3;
+      g.strokeStyle = tones[Math.floor(rnd() * tones.length)];
+      g.lineWidth = 0.7 + rnd() * 0.9;
+      const ex = Math.cos(ang) * len, ey = Math.sin(ang) * len;
+      for (const ox of [-T, 0, T]) for (const oy of [-T, 0, T]) {
+        const sx = x + ox, sy = y + oy;
+        if (sx + ex < -2 || sx - 8 > T || sy + ey < -8 || sy > T + 8) continue;
+        g.beginPath();
+        g.moveTo(sx, sy);
+        g.quadraticCurveTo(sx + ex * 0.4 + 0.8, sy + ey * 0.5, sx + ex, sy + ey);
+        g.stroke();
+      }
+    }
+    // Tiny soil / clover speckles
+    for (let i = 0; i < 220; i++) {
+      g.fillStyle = rnd() < 0.5 ? shadeRgb(biome.hillridge, -0.3, 0.18) : shadeRgb(biome.meadowLight, 0.35, 0.22);
+      g.beginPath(); g.arc(rnd() * T, rnd() * T, 0.5 + rnd() * 0.9, 0, Math.PI * 2); g.fill();
+    }
+
+    // Large soft patches (lusher / drier areas) on a bigger tile to hide repetition
+    const P = 640;
+    const patches = document.createElement('canvas');
+    patches.width = patches.height = P;
+    const pg = patches.getContext('2d');
+    for (let i = 0; i < 26; i++) {
+      const x = rnd() * P, y = rnd() * P, r = 50 + rnd() * 120;
+      const dark = rnd() < 0.55;
+      const col = dark ? shadeRgb(biome.hillridge, -0.1, 0.16) : shadeRgb(biome.meadowLight, 0.3, 0.16);
+      const clear = dark ? shadeRgb(biome.hillridge, -0.1, 0) : shadeRgb(biome.meadowLight, 0.3, 0);
+      for (const ox of [-P, 0, P]) for (const oy of [-P, 0, P]) {
+        const cx = x + ox, cy = y + oy;
+        if (cx + r < 0 || cx - r > P || cy + r < 0 || cy - r > P) continue;
+        const gr = pg.createRadialGradient(cx, cy, 0, cx, cy, r);
+        gr.addColorStop(0, col);
+        gr.addColorStop(1, clear);
+        pg.fillStyle = gr;
+        pg.fillRect(cx - r, cy - r, r * 2, r * 2);
+      }
+    }
+    return {
+      blades: ctx.createPattern(blades, 'repeat'),
+      patches: ctx.createPattern(patches, 'repeat')
+    };
+  }
+
+  function drawGrass(biome, viewTop, viewBottom, time) {
+    const idx = currentBiomeIndex;
+    if (!grassCache[idx]) grassCache[idx] = buildGrassTextures(biome, idx);
+    const tex = grassCache[idx];
+    const halfW = (width / camera.zoom) * 0.6 + 200;
+    const left = camera.x - halfW;
+    const w = halfW * 2;
+    const h = viewBottom - viewTop;
+
+    ctx.fillStyle = tex.patches;
+    ctx.fillRect(left, viewTop, w, h);
+    ctx.fillStyle = tex.blades;
+    ctx.fillRect(left, viewTop, w, h);
+
+    // Wind sheen: broad bright gusts rolling across the meadow
+    const cell = 520;
+    const c0 = Math.floor(left / cell) - 1, c1 = Math.ceil((left + w) / cell) + 1;
+    const r0 = Math.floor(viewTop / cell) - 1, r1 = Math.ceil(viewBottom / cell) + 1;
+    const sheen = idx === 3 ? 'rgba(170, 200, 230, ' : 'rgba(255, 255, 240, ';
+    for (let cx = c0; cx <= c1; cx++) {
+      for (let cy = r0; cy <= r1; cy++) {
+        const hsh = hash1D(cx * 17.3 + cy * 91.7);
+        if (hsh > 0.45) continue;
+        const life = (time * 0.09 + hsh * 7) % 1;
+        const a = Math.sin(life * Math.PI) * 0.07;
+        const x = cx * cell + hsh * cell + life * 260;
+        const y = cy * cell + hash1D(cx * 3.1 + cy * 5.9) * cell - life * 120;
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(-0.42);
+        const gr = ctx.createRadialGradient(0, 0, 0, 0, 0, 160);
+        gr.addColorStop(0, sheen + a.toFixed(3) + ')');
+        gr.addColorStop(1, sheen + '0)');
+        ctx.fillStyle = gr;
+        ctx.scale(1.9, 0.55);
+        ctx.beginPath(); ctx.arc(0, 0, 160, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    // Close-up tufts: only when the drone is low enough to make them out
+    const detail = clampNum((camera.zoom / getBaseZoom() - 0.62) / 0.3, 0, 1);
+    if (detail <= 0) return;
+    const tc = 64;
+    const tx0 = Math.floor(left / tc), tx1 = Math.ceil((left + w) / tc);
+    const ty0 = Math.floor(viewTop / tc), ty1 = Math.ceil(viewBottom / tc);
+    const darkPath = new Path2D();
+    const lightPath = new Path2D();
+    for (let gx = tx0; gx <= tx1; gx++) {
+      for (let gy = ty0; gy <= ty1; gy++) {
+        const hsh = hash1D(gx * 12.9898 + gy * 78.233);
+        if (hsh > 0.55) continue;
+        const bx = gx * tc + hash1D(gx * 4.1 + gy * 1.3) * tc;
+        const by = gy * tc + hash1D(gx * 2.7 + gy * 6.1) * tc;
+        if (Math.abs(bx - riverCenterAt(by)) < riverWidthAt(by) + 26) continue;
+        const sway = Math.sin(time * 1.6 + bx * 0.01 + by * 0.004) * 1.6;
+        const n = 5 + Math.floor(hsh * 6);
+        for (let k = 0; k < n; k++) {
+          const spreadA = (k / (n - 1) - 0.5) * 1.6 + (hash1D(hsh * 50 + k) - 0.5) * 0.3;
+          const len = 6 + hash1D(hsh * 31 + k) * 7;
+          const ex = bx + Math.sin(spreadA) * len * 0.7 + sway;
+          const ey = by - Math.cos(spreadA) * len * 0.55;
+          const path = k % 3 === 0 ? lightPath : darkPath;
+          path.moveTo(bx + (k - n / 2) * 0.6, by);
+          path.quadraticCurveTo(bx + Math.sin(spreadA) * len * 0.2, by - len * 0.3, ex, ey);
+        }
+      }
+    }
+    ctx.lineCap = 'round';
+    ctx.globalAlpha = 0.55 * detail;
+    ctx.strokeStyle = shadeRgb(biome.hillridge, -0.2, 1);
+    ctx.lineWidth = 1.2;
+    ctx.stroke(darkPath);
+    ctx.globalAlpha = 0.45 * detail;
+    ctx.strokeStyle = shadeRgb(biome.meadowLight, 0.3, 1);
+    ctx.lineWidth = 0.9;
+    ctx.stroke(lightPath);
+    ctx.globalAlpha = 1;
+    ctx.lineCap = 'butt';
   }
 
   function drawMeanderingRiver(biome, viewTop, viewBottom, time) {
@@ -2311,8 +2502,8 @@
     ctx.translate(plane.x, plane.y);
     ctx.rotate(plane.heading);
 
-    // Subtle scale boost when higher in altitude (closer to the drone camera)
-    const altScale = 0.88 + (plane.z / 42) * 0.24;
+    // The drone keeps a fixed distance from the plane, so the plane keeps a constant screen size
+    const altScale = 1.12 * planeScreenScale();
     ctx.scale(altScale, altScale);
 
     // Soft rising wind-gust halo when the plane is being lifted by a gust
@@ -2720,7 +2911,7 @@
   }
 
   function addWakePetal(x, y, color, ttl, force) {
-    if (floatingPetals.length > 315) return null;
+    if (floatingPetals.length > 420 * LEAF_DENSITY) return null;
     if (!force && Math.random() > LEAF_DENSITY) return null;
     const petal = {
       x, y, z: plane.z,
@@ -3017,11 +3208,12 @@
         sightings++;
         rainbowFound = true;
         flightBonusBloom += 0.02;
-        plane.z = Math.min(68, plane.z + 8);
+        plane.z += 8;
         whisper('You flew through a rainbow');
         audio.playRainbowSound();
-        for (let k = 0; k < 16; k++) {
-          const ang = (k / 16) * Math.PI * 2;
+        const rainbowLeaves = Math.round(21 * LEAF_DENSITY);
+        for (let k = 0; k < rainbowLeaves; k++) {
+          const ang = (k / rainbowLeaves) * Math.PI * 2;
           const last = addWakePetal(plane.x + Math.cos(ang) * 14, plane.y + Math.sin(ang) * 14, RAINBOW_COLORS[k % 7], 3.6, true);
           if (last) {
             last.vx = Math.cos(ang) * (40 + Math.random() * 40);
@@ -3151,8 +3343,9 @@
     ob.grazed = true;
     flightBonusBloom += 0.005;
     const cols = FAUNA[1].bloomColors;
-    for (let k = 0; k < 20; k++) {
-      if (floatingPetals.length > 330) break;
+    const grazeLeaves = Math.round(26 * LEAF_DENSITY);
+    for (let k = 0; k < grazeLeaves; k++) {
+      if (floatingPetals.length > 440 * LEAF_DENSITY) break;
       const ang = Math.random() * Math.PI * 2;
       floatingPetals.push({
         x: ob.x + Math.cos(ang) * ob.radius * 0.6,
