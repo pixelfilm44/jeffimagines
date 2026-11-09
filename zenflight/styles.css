@@ -711,3 +711,128 @@ html, body {
 .stat-pill.above-trees .stat-label {
   color: #3f7a45;
 }
+
+/* Title-screen options menu */
+.options-menu {
+  margin: 14px auto 4px;
+  max-width: 340px;
+  text-align: left;
+}
+
+.options-menu summary {
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 auto;
+  padding: 7px 14px;
+  border-radius: 999px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.options-menu summary::-webkit-details-marker { display: none; }
+
+.options-menu summary:hover,
+.options-menu[open] summary {
+  background: rgba(31, 45, 46, 0.07);
+  color: var(--text-primary);
+}
+
+.options-menu summary:focus-visible,
+.option-row:focus-visible {
+  outline: 2px solid var(--accent-warm);
+  outline-offset: 2px;
+}
+
+.options-menu {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.options-list {
+  width: 100%;
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.option-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(31, 45, 46, 0.1);
+  border-radius: 14px;
+  font-family: var(--font-sans);
+  text-align: left;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.option-row:hover { background: rgba(255, 255, 255, 0.85); }
+
+.option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.option-text strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.option-text small {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.switch {
+  position: relative;
+  flex: none;
+  width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  background: rgba(31, 45, 46, 0.18);
+  transition: background 0.2s ease;
+}
+
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  transition: transform 0.2s ease;
+}
+
+.option-row[aria-checked="true"] .switch { background: var(--accent-warm); }
+.option-row[aria-checked="true"] .switch::after { transform: translateX(16px); }
+
+/* Let the title / landing cards scroll when taller than the screen (e.g. options open on a phone) */
+.overlay-screen {
+  align-items: flex-start;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+
+.overlay-screen .title-card {
+  margin: auto 0;
+}

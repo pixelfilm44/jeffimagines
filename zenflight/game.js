@@ -31,15 +31,17 @@
 
   const btnLaunch = document.getElementById('btn-launch');
   const btnRelaunch = document.getElementById('btn-relaunch');
-  const btnBiome = document.getElementById('btn-biome');
-  const biomeLabel = document.getElementById('biome-label');
+  // Options live in a menu on the title screen (the in-flight HUD only shows live metrics)
   const btnZen = document.getElementById('btn-zen');
-  const zenLabel = document.getElementById('zen-label');
   const btnTilt = document.getElementById('btn-tilt');
-  const tiltLabel = document.getElementById('tilt-label');
   const btnAudio = document.getElementById('btn-audio');
-  const iconSoundOn = document.getElementById('icon-sound-on');
-  const iconSoundOff = document.getElementById('icon-sound-off');
+  const btnWeather = document.getElementById('btn-weather');
+  const optionsMenu = document.getElementById('options-menu');
+  if (optionsMenu) {
+    optionsMenu.addEventListener('toggle', () => {
+      if (optionsMenu.open) optionsMenu.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+  }
   const biomeChips = document.querySelectorAll('.biome-chip');
 
   // Biomes / Scenery Palettes
@@ -473,6 +475,8 @@
 
   let currentBiomeIndex = 0;
   let zenMode = false;
+  let weatherEnabled = true;   // option: let clouds / rain / snow / fog roll through
+  try { weatherEnabled = localStorage.getItem('zen_weather') !== '0'; } catch (e) { /* storage unavailable */ }
   let bestDistance = 0;
   try { bestDistance = Number(localStorage.getItem('paper_drift_best') || 0) || 0; } catch (e) { /* storage unavailable */ }
 
@@ -828,7 +832,7 @@
       }
 
       // 3. Swirling Wind Circles (Collecting a circle releases an upward gust of air that lifts the plane & prolongs flight)
-      if (bandY < -200 && Math.random() < 0.4) {
+      if (bandY < -200 && Math.random() < 0.3) {
         const tx = plane.x + (Math.random() - 0.5) * 820;
         const ty = bandY - Math.random() * 90;
         // Ensure circle isn't inside an obstacle
@@ -1169,7 +1173,6 @@
 
   function setBiome(index) {
     currentBiomeIndex = (index + BIOMES.length) % BIOMES.length;
-    biomeLabel.textContent = BIOMES[currentBiomeIndex].name;
     updateTitleBloom();
     const envBtnName = document.getElementById('env-btn-name');
     if (envBtnName) envBtnName.textContent = BIOMES[currentBiomeIndex].name;
@@ -1183,10 +1186,6 @@
     btnChangeEnv.addEventListener('click', () => setBiome(currentBiomeIndex + 1));
   }
 
-  btnBiome.addEventListener('click', () => {
-    setBiome(currentBiomeIndex + 1);
-  });
-
   biomeChips.forEach((chip) => {
     chip.addEventListener('click', () => {
       setBiome(Number(chip.dataset.biome));
@@ -1195,16 +1194,15 @@
 
   btnZen.addEventListener('click', () => {
     zenMode = !zenMode;
-    zenLabel.textContent = zenMode ? 'Zen: On' : 'Zen: Off';
-    btnZen.classList.toggle('active-mode', zenMode);
+    btnZen.setAttribute('aria-checked', String(zenMode));
   });
 
   function updateTiltUI() {
-    if (!btnTilt || !tiltLabel) return;
-    tiltLabel.textContent = input.tiltEnabled ? 'Tilt: On' : 'Tilt: Off';
-    btnTilt.classList.toggle('active-mode', input.tiltEnabled);
+    if (!btnTilt) return;
+    btnTilt.setAttribute('aria-checked', String(input.tiltEnabled));
   }
   updateTiltUI();
+  btnWeather.setAttribute('aria-checked', String(weatherEnabled));
 
   if (btnTilt) {
     btnTilt.addEventListener('click', async () => {
@@ -1221,10 +1219,15 @@
     });
   }
 
+  btnWeather.addEventListener('click', () => {
+    weatherEnabled = !weatherEnabled;
+    btnWeather.setAttribute('aria-checked', String(weatherEnabled));
+    try { localStorage.setItem('zen_weather', weatherEnabled ? '1' : '0'); } catch (e) { /* storage unavailable */ }
+  });
+
   btnAudio.addEventListener('click', () => {
     const muted = audio.toggleMute();
-    iconSoundOn.classList.toggle('hidden', muted);
-    iconSoundOff.classList.toggle('hidden', !muted);
+    btnAudio.setAttribute('aria-checked', String(!muted));
   });
 
   // Update Physics & World
@@ -4268,7 +4271,8 @@
         if (interactive) whisper(line.text);
       }
       sky.weatherTimer -= dt;
-      if (sky.weatherTimer <= 0) {
+      if (!weatherEnabled) sky.weather = 'clear';
+      else if (sky.weatherTimer <= 0) {
         sky.weather = pickWeather();
         sky.weatherTimer = 16 + Math.random() * 14;
         if (interactive) whisper(WEATHER_LINES[sky.weather]);
