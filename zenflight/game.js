@@ -764,21 +764,8 @@
 
         const roll = Math.random();
         if (distRiver < rw + 16) {
-          // Over the river: either a tall river monolith rock or a drifting hot air balloon
-          if (roll < 0.22 && bandY < -500) {
-            obstacles.push({
-              type: 'balloon',
-              x: ox,
-              y: oy,
-              baseX: ox,
-              radius: 40,
-              hitRadius: 34,
-              height: 62,
-              colorIdx: Math.floor(Math.random() * 3),
-              swayPhase: Math.random() * Math.PI * 2,
-              swaySpeed: 0.7 + Math.random() * 0.5
-            });
-          } else if (roll < 0.45 && distRiver < rw - 25) {
+          // Over the river: an occasional tall river monolith rock (balloons only fly high above the treeline)
+          if (roll < 0.45 && distRiver < rw - 25) {
             obstacles.push({
               type: 'rock',
               x: ox,
@@ -812,19 +799,6 @@
               hitRadius: 28,
               height: 64,
               bladeAngle: Math.random() * Math.PI * 2
-            });
-          } else if (bandY < -550) {
-            obstacles.push({
-              type: 'balloon',
-              x: ox,
-              y: oy,
-              baseX: ox,
-              radius: 42,
-              hitRadius: 35,
-              height: 64,
-              colorIdx: Math.floor(Math.random() * 3),
-              swayPhase: Math.random() * Math.PI * 2,
-              swaySpeed: 0.6 + Math.random() * 0.5
             });
           }
         }
