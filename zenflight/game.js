@@ -1019,9 +1019,16 @@
   function setBiome(index) {
     currentBiomeIndex = (index + BIOMES.length) % BIOMES.length;
     biomeLabel.textContent = BIOMES[currentBiomeIndex].name;
+    const envBtnName = document.getElementById('env-btn-name');
+    if (envBtnName) envBtnName.textContent = BIOMES[currentBiomeIndex].name;
     biomeChips.forEach((chip, idx) => {
       chip.classList.toggle('active', idx === currentBiomeIndex);
     });
+  }
+
+  const btnChangeEnv = document.getElementById('btn-change-env');
+  if (btnChangeEnv) {
+    btnChangeEnv.addEventListener('click', () => setBiome(currentBiomeIndex + 1));
   }
 
   btnBiome.addEventListener('click', () => {
