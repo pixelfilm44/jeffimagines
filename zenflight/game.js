@@ -546,6 +546,13 @@
   let flightBonusBloom = 0;
   let bankTimer = 0;
   let rainbowFound = false;
+  let mists = [];            // Nordic Fjord mist banks
+  let mistLevel = 0;         // 0..1 screen softening while inside mist
+  let auroraLevel = 0.3;     // 0..1 brightness of the Nordic aurora
+  let auroraAnnounced = false;
+  let fireflies = [];        // Starlight Dusk ambient fireflies
+  let fireflyFollowers = []; // fireflies trailing the plane
+  let fireflyClusters = [];  // collectible clusters that light lanterns
 
   let spawnedUpToY = 400; // We generate world chunks ahead (as Y decreases)
 
@@ -603,6 +610,12 @@
     rainbows = [];
     lastRainbowY = 0;
     escort = null;
+    mists = [];
+    mistLevel = 0;
+    auroraAnnounced = false;
+    fireflies = [];
+    fireflyFollowers = [];
+    fireflyClusters = [];
     escortTimer = 12 + Math.random() * 10;
     wakeTimer = 0;
     wakeDist = 0;
@@ -1469,6 +1482,7 @@
         ob.bladeAngle += dt * 1.35;
       } else if (ob.type === 'tree') {
         updateTreeSway(ob, dt);
+        checkBlossomGraze(ob);
       }
 
       if (!zenMode && plane.invulnerableTimer <= 0) {
@@ -1525,6 +1539,11 @@
         p.age += dt;
         p.vx *= Math.pow(0.5, dt);
         p.vy *= Math.pow(0.5, dt);
+        if (p.seek) {
+          // Riding the wind alongside the plane
+          p.x += (plane.x + p.ox - p.x) * p.seek * dt;
+          p.y += (plane.y + p.oy - p.y) * p.seek * dt;
+        }
         if (p.age >= p.ttl) floatingPetals.splice(i, 1);
         continue;
       }
@@ -1577,6 +1596,8 @@
     birdFlocks = birdFlocks.filter((b) => b.y < cutoffY);
     waterRipples = waterRipples.filter((w) => w.y < cutoffY);
     creatures = creatures.filter((c) => c.y < cutoffY);
+    mists = mists.filter((m) => m.y < cutoffY);
+    fireflyClusters = fireflyClusters.filter((f) => f.y < cutoffY);
     rainbows = rainbows.filter((r) => r.y < cutoffY);
   }
 
@@ -1633,6 +1654,8 @@
     // 10. The Paper Airplane (3D Origami Projection with Sun Shading)
     drawPaperAirplane(biome);
     drawEscortBirds(time);
+    drawFireflies(time);
+    drawMists(time);
 
     // 11. High-Altitude Drifting Petals / Dandelion Seeds
     drawFloatingPetals(biome);
@@ -1645,6 +1668,12 @@
     sunGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
     ctx.fillStyle = sunGrad;
     ctx.fillRect(0, 0, width, height);
+
+    if (currentBiomeIndex === 2) drawAurora(time);
+    if (mistLevel > 0.01) {
+      ctx.fillStyle = `rgba(226, 240, 246, ${(mistLevel * 0.42).toFixed(3)})`;
+      ctx.fillRect(0, 0, width, height);
+    }
 
     ctx.restore();
   }
@@ -1765,6 +1794,8 @@
         ctx.beginPath();
         ctx.arc(d.x, d.y, d.radius * 0.7, 0, Math.PI * 2);
         ctx.fill();
+      } else if (d.type === 'lantern') {
+        drawLantern(d, time);
       } else if (d.type === 'bloom') {
         drawBloomSpot(d, time);
       } else if (d.type === 'bridge') {
@@ -2462,6 +2493,28 @@
       }
     }
 
+    // Nordic Fjord: drifting mist banks
+    if (currentBiomeIndex === 2 && bandY < -600 && Math.random() < 0.07) {
+      const mx = plane.x + (Math.random() - 0.5) * 700;
+      const blobs = [];
+      for (let k = 0; k < 6; k++) {
+        blobs.push({ ox: (Math.random() - 0.5) * 220, oy: (Math.random() - 0.5) * 140, r: 90 + Math.random() * 60 });
+      }
+      mists.push({ x: mx, y: bandY, blobs, passed: false, phase: Math.random() * 6 });
+    }
+
+    // Starlight Dusk: firefly clusters that light lanterns when gathered
+    if (currentBiomeIndex === 3 && bandY < -300 && Math.random() < 0.1) {
+      const flies = [];
+      for (let k = 0; k < 8; k++) {
+        flies.push({ a: Math.random() * Math.PI * 2, d: 14 + Math.random() * 36, s: 0.5 + Math.random() * 0.8, seed: Math.random() * 10 });
+      }
+      fireflyClusters.push({
+        x: plane.x + (Math.random() - 0.5) * 700, y: bandY - Math.random() * 100,
+        radius: 58, flies, collected: false
+      });
+    }
+
     // A rare rainbow arching over the Golden Valley
     if (currentBiomeIndex === 0 && bandY < -1500 && lastRainbowY - bandY > 5000 && Math.random() < 0.007) {
       lastRainbowY = bandY;
@@ -2584,6 +2637,7 @@
     updateCreatures(dt, time, interactive);
     updateRainbows(interactive);
     updateEscort(dt, time, interactive);
+    updateAtmosphere(dt, time, interactive);
 
     if (interactive) {
       bankTimer += dt;
@@ -2906,6 +2960,263 @@
       ctx.quadraticCurveTo(b.x - 3, b.y - 3, b.x, b.y);
       ctx.quadraticCurveTo(b.x + 3, b.y - 3, b.x + 8, b.y + 4 + wing * 0.5);
       ctx.stroke();
+    }
+  }
+
+
+  // ===================================================================
+  // ENVIRONMENT MOMENTS — Sakura blossoms, Nordic aurora & mist, Dusk fireflies
+  // ===================================================================
+
+  // --- Sakura Highlands: brush past a blossom tree and its petals ride along with you ---
+  function checkBlossomGraze(ob) {
+    if (currentBiomeIndex !== 1 || gameState !== STATE.FLYING || ob.grazed) return;
+    if (Math.hypot(ob.x - plane.x, ob.y - plane.y) > ob.radius + 45) return;
+    ob.grazed = true;
+    flightBonusBloom += 0.005;
+    const cols = FAUNA[1].bloomColors;
+    for (let k = 0; k < 26; k++) {
+      if (floatingPetals.length > 440) break;
+      const ang = Math.random() * Math.PI * 2;
+      floatingPetals.push({
+        x: ob.x + Math.cos(ang) * ob.radius * 0.6,
+        y: ob.y + Math.sin(ang) * ob.radius * 0.6,
+        z: plane.z,
+        size: 2.6 + Math.random() * 2.2,
+        vx: Math.cos(ang) * 30, vy: Math.sin(ang) * 30 - 20,
+        phase: Math.random() * Math.PI * 2,
+        age: 0, ttl: 4.8 + Math.random() * 1.6,
+        color: cols[k % cols.length],
+        seek: 0.5 + Math.random() * 0.5,
+        ox: (Math.random() - 0.5) * 120,
+        oy: -20 + Math.random() * 90
+      });
+    }
+    whisper('Blossoms swirl in your wake');
+    audio.playPluck(659.25, 1.3, 0.028);
+    setTimeout(() => audio.playPluck(880, 1.3, 0.02), 130);
+  }
+
+  // --- Nordic Fjord: aurora (brightens with distance) and mist banks ---
+  function drawAurora(time) {
+    const level = auroraLevel;
+    if (level < 0.02) return;
+    const bands = [
+      { c: [52, 214, 138], off: 0.05 },
+      { c: [36, 188, 196], off: 0.095 },
+      { c: [138, 104, 236], off: 0.14 }
+    ];
+    ctx.save();
+    for (let i = 0; i < bands.length; i++) {
+      const b = bands[i];
+      const top = [];
+      const bottom = [];
+      for (let x = 0; x <= width + 30; x += 30) {
+        const y0 = height * b.off + Math.sin(x * 0.005 + time * 0.25 + i * 1.7) * height * 0.04;
+        const len = height * (0.1 + 0.08 * Math.sin(x * 0.011 + time * 0.4 + i)) * (0.55 + level * 0.9);
+        top.push([x, y0]);
+        bottom.push([x, y0 + len]);
+      }
+      const g = ctx.createLinearGradient(0, 0, 0, height * 0.5);
+      const a = (0.08 + level * 0.42).toFixed(3);
+      g.addColorStop(0, `rgba(${b.c[0]}, ${b.c[1]}, ${b.c[2]}, ${a})`);
+      g.addColorStop(1, `rgba(${b.c[0]}, ${b.c[1]}, ${b.c[2]}, 0)`);
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.moveTo(top[0][0], top[0][1]);
+      for (let k = 1; k < top.length; k++) ctx.lineTo(top[k][0], top[k][1]);
+      for (let k = bottom.length - 1; k >= 0; k--) ctx.lineTo(bottom[k][0], bottom[k][1]);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawMists(time) {
+    if (mists.length === 0) return;
+    const halfY = (height / camera.zoom) * 0.8 + 260;
+    for (let i = 0; i < mists.length; i++) {
+      const m = mists[i];
+      if (Math.abs(m.y - camera.y) > halfY) continue;
+      for (let k = 0; k < m.blobs.length; k++) {
+        const b = m.blobs[k];
+        const bx = m.x + b.ox + Math.sin(time * 0.15 + m.phase + k) * 14;
+        const by = m.y + b.oy;
+        const g = ctx.createRadialGradient(bx, by, 4, bx, by, b.r);
+        g.addColorStop(0, 'rgba(238, 247, 250, 0.55)');
+        g.addColorStop(1, 'rgba(238, 247, 250, 0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(bx, by, b.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
+  // --- Starlight Dusk: fireflies that follow you, clusters that light lanterns ---
+  function drawLantern(d, time) {
+    const lit = d.lit || 0;
+    const pulse = 0.8 + Math.sin(time * 1.6 + d.seed) * 0.2;
+    ctx.fillStyle = '#56657a';
+    ctx.beginPath(); ctx.arc(d.x, d.y, 3.4, 0, Math.PI * 2); ctx.fill();
+    if (lit > 0.01) {
+      ctx.fillStyle = `rgba(255, 190, 110, ${(0.15 * lit * pulse).toFixed(3)})`;
+      ctx.beginPath(); ctx.arc(d.x, d.y, 24 + lit * 6, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = `rgba(255, 206, 130, ${(0.32 * lit * pulse).toFixed(3)})`;
+      ctx.beginPath(); ctx.arc(d.x, d.y, 11, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = `rgba(255, 236, 170, ${(0.95 * lit).toFixed(3)})`;
+      ctx.beginPath(); ctx.arc(d.x, d.y, 3.4, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  function joinFireflyTrail(n) {
+    for (let k = 0; k < n; k++) {
+      if (fireflyFollowers.length >= 30) fireflyFollowers.shift();
+      fireflyFollowers.push({
+        side: (Math.random() - 0.5) * 56,
+        back: 14 + Math.random() * 60,
+        x: plane.x + (Math.random() - 0.5) * 120,
+        y: plane.y + (Math.random() - 0.5) * 120,
+        seed: Math.random() * 10
+      });
+    }
+  }
+
+  function updateAtmosphere(dt, time, interactive) {
+    // Nordic aurora brightens as the glide gets longer
+    const flyingish = gameState === STATE.FLYING || gameState === STATE.LANDING;
+    const auroraTarget = flyingish ? 0.15 + 0.85 * Math.min(1, plane.distanceFlown / 3000) : 0.3;
+    auroraLevel += (auroraTarget - auroraLevel) * Math.min(1, 0.6 * dt);
+    if (interactive && currentBiomeIndex === 2 && auroraLevel > 0.6 && !auroraAnnounced) {
+      auroraAnnounced = true;
+      whisper('The aurora brightens above');
+    }
+
+    // Mist banks soften the screen while you drift through
+    let inMist = false;
+    if (interactive && currentBiomeIndex === 2) {
+      for (let i = 0; i < mists.length; i++) {
+        const m = mists[i];
+        if (Math.abs(m.y - plane.y) > 260) continue;
+        for (let k = 0; k < m.blobs.length; k++) {
+          const b = m.blobs[k];
+          if (Math.hypot(plane.x - (m.x + b.ox), plane.y - (m.y + b.oy)) < b.r * 0.7) {
+            inMist = true;
+            if (!m.passed) {
+              m.passed = true;
+              flightBonusBloom += 0.005;
+              whisper('Drifting through the mist');
+            }
+            break;
+          }
+        }
+        if (inMist) break;
+      }
+    }
+    mistLevel += ((inMist ? 1 : 0) - mistLevel) * Math.min(1, (inMist ? 2.2 : 0.9) * dt);
+
+    // Starlight Dusk fireflies
+    if (currentBiomeIndex !== 3) {
+      if (fireflies.length || fireflyFollowers.length) { fireflies = []; fireflyFollowers = []; }
+      return;
+    }
+    while (fireflies.length < 26) {
+      fireflies.push({
+        x: camera.x + (Math.random() - 0.5) * width * 1.3,
+        y: camera.y + (Math.random() - 0.5) * height * 1.3,
+        vx: (Math.random() - 0.5) * 12, vy: (Math.random() - 0.5) * 12,
+        seed: Math.random() * 10
+      });
+    }
+    const sinH = Math.sin(plane.heading);
+    const cosH = Math.cos(plane.heading);
+    for (let i = fireflies.length - 1; i >= 0; i--) {
+      const f = fireflies[i];
+      f.x += (f.vx + Math.sin(time * 0.8 + f.seed) * 10) * dt;
+      f.y += (f.vy + Math.cos(time * 0.7 + f.seed) * 10) * dt;
+      if (interactive) {
+        const dx = plane.x - f.x;
+        const dy = plane.y - f.y;
+        const d = Math.hypot(dx, dy);
+        if (d < 230) {
+          f.x += (dx / (d || 1)) * (30 + (230 - d) * 0.25) * dt;
+          f.y += (dy / (d || 1)) * (30 + (230 - d) * 0.25) * dt;
+        }
+        if (d < 34) {
+          fireflies.splice(i, 1);
+          joinFireflyTrail(1);
+          continue;
+        }
+      }
+      if (Math.abs(f.x - camera.x) > width * 0.85) f.x = camera.x - Math.sign(f.x - camera.x) * width * 0.8;
+      if (Math.abs(f.y - camera.y) > height * 0.85) f.y = camera.y - Math.sign(f.y - camera.y) * height * 0.8;
+    }
+
+    for (let i = 0; i < fireflyFollowers.length; i++) {
+      const f = fireflyFollowers[i];
+      const tx = plane.x + cosH * f.side - sinH * f.back + Math.sin(time * 1.3 + f.seed) * 8;
+      const ty = plane.y + sinH * f.side + cosH * f.back + Math.cos(time * 1.1 + f.seed) * 8;
+      const ease = Math.min(1, 3 * dt);
+      f.x += (tx - f.x) * ease;
+      f.y += (ty - f.y) * ease;
+    }
+
+    // Clusters: gather them to light lanterns across the ground
+    if (interactive) {
+      for (let i = 0; i < fireflyClusters.length; i++) {
+        const c = fireflyClusters[i];
+        if (c.collected) continue;
+        if (Math.hypot(plane.x - c.x, plane.y - c.y) < c.radius + 20) {
+          c.collected = true;
+          sightings++;
+          joinFireflyTrail(c.flies.length);
+          for (let k = 0; k < 10; k++) {
+            const ang = (k / 10) * Math.PI * 2 + Math.random() * 0.5;
+            const dist = 70 + Math.random() * 90;
+            groundDecor.push({
+              type: 'lantern',
+              x: c.x + Math.cos(ang) * dist, y: c.y + Math.sin(ang) * dist - 40,
+              radius: 10, seed: Math.random() * 10, lit: 0, igniteAt: time + k * 0.12
+            });
+          }
+          whisper('Fireflies gather, lanterns awaken');
+          audio.playThermalChime();
+        }
+      }
+    }
+    for (let i = 0; i < groundDecor.length; i++) {
+      const d = groundDecor[i];
+      if (d.type === 'lantern' && d.lit < 1 && time >= d.igniteAt) {
+        d.lit = Math.min(1, d.lit + dt * 0.9);
+      }
+    }
+  }
+
+  function drawFireflies(time) {
+    if (currentBiomeIndex !== 3) return;
+    const glow = (x, y, seed, scale) => {
+      const pulse = 0.55 + 0.45 * Math.sin(time * 3 + seed * 2);
+      ctx.fillStyle = `rgba(255, 233, 150, ${(0.16 * pulse * scale).toFixed(3)})`;
+      ctx.beginPath(); ctx.arc(x, y, 9 * scale, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = `rgba(255, 244, 190, ${(0.4 + 0.6 * pulse).toFixed(3)})`;
+      ctx.beginPath(); ctx.arc(x, y, 1.9 * scale, 0, Math.PI * 2); ctx.fill();
+    };
+    for (let i = 0; i < fireflies.length; i++) glow(fireflies[i].x, fireflies[i].y, fireflies[i].seed, 1);
+    for (let i = 0; i < fireflyFollowers.length; i++) glow(fireflyFollowers[i].x, fireflyFollowers[i].y, fireflyFollowers[i].seed, 1.15);
+    const halfY = (height / camera.zoom) * 0.8 + 100;
+    for (let i = 0; i < fireflyClusters.length; i++) {
+      const c = fireflyClusters[i];
+      if (c.collected || Math.abs(c.y - camera.y) > halfY) continue;
+      const aura = ctx.createRadialGradient(c.x, c.y, 4, c.x, c.y, c.radius + 20);
+      aura.addColorStop(0, 'rgba(255, 233, 150, 0.22)');
+      aura.addColorStop(1, 'rgba(255, 233, 150, 0)');
+      ctx.fillStyle = aura;
+      ctx.beginPath(); ctx.arc(c.x, c.y, c.radius + 20, 0, Math.PI * 2); ctx.fill();
+      for (let k = 0; k < c.flies.length; k++) {
+        const f = c.flies[k];
+        const ang = f.a + time * f.s;
+        glow(c.x + Math.cos(ang) * f.d, c.y + Math.sin(ang) * f.d * 0.8, f.seed, 1.1);
+      }
     }
   }
 
