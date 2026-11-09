@@ -825,7 +825,7 @@
       }
 
       // 3. Swirling Wind Circles (Collecting a circle releases an upward gust of air that lifts the plane & prolongs flight)
-      if (bandY < -200 && Math.random() < 0.42) {
+      if (bandY < -200 && Math.random() < 0.21) {
         const tx = plane.x + (Math.random() - 0.5) * 820;
         const ty = bandY - Math.random() * 90;
         // Ensure circle isn't inside an obstacle
@@ -2255,8 +2255,11 @@
       const th = thermals[i];
       if (th.collected && th.collectAnim >= 1) continue;
 
+      // Rings hang in the air at the plane's height, so they keep the plane's on-screen scale
+      const F = planeScreenScale();
       ctx.save();
-      ctx.translate(th.x, th.y);
+      ctx.translate(plane.x + (th.x - plane.x) * F, plane.y + (th.y - plane.y) * F);
+      ctx.scale(F, F);
 
       if (th.collected) {
         // Expanding upward gust of air animation when the plane collects the circle
@@ -2282,24 +2285,33 @@
 
       // Soft warm golden updraft glow
       const grad = ctx.createRadialGradient(0, 0, th.radius * 0.2, 0, 0, th.radius * 1.25);
-      grad.addColorStop(0, 'rgba(255, 226, 130, 0.32)');
-      grad.addColorStop(0.7, 'rgba(255, 200, 95, 0.15)');
+      grad.addColorStop(0, 'rgba(255, 226, 130, 0.42)');
+      grad.addColorStop(0.7, 'rgba(255, 200, 95, 0.2)');
       grad.addColorStop(1, 'rgba(255, 200, 95, 0)');
       ctx.fillStyle = grad;
       ctx.beginPath();
       ctx.arc(0, 0, th.radius * 1.25, 0, Math.PI * 2);
       ctx.fill();
 
-      // Rotating swirling wind arcs
+      // Soft shadow ring so the circle reads against pale meadows, snow or night
+      ctx.strokeStyle = 'rgba(90, 60, 10, 0.28)';
+      ctx.lineWidth = 3.2;
+      ctx.beginPath();
+      ctx.arc(1.5, 2, th.radius * 0.74, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Rotating swirling wind arcs (dark edge + bright core)
       ctx.rotate(time * 1.2 + th.pulse);
-      ctx.strokeStyle = 'rgba(255, 238, 170, 0.82)';
-      ctx.lineWidth = 2.3;
       ctx.lineCap = 'round';
-      for (let a = 0; a < 3; a++) {
-        const startAngle = (a * Math.PI * 2) / 3;
-        ctx.beginPath();
-        ctx.arc(0, 0, th.radius * (0.72 + Math.sin(th.pulse) * 0.06), startAngle, startAngle + 1.35);
-        ctx.stroke();
+      for (let pass = 0; pass < 2; pass++) {
+        ctx.strokeStyle = pass === 0 ? 'rgba(150, 95, 20, 0.45)' : 'rgba(255, 238, 170, 0.95)';
+        ctx.lineWidth = pass === 0 ? 4.4 : 2.4;
+        for (let a = 0; a < 3; a++) {
+          const startAngle = (a * Math.PI * 2) / 3;
+          ctx.beginPath();
+          ctx.arc(0, 0, th.radius * (0.72 + Math.sin(th.pulse) * 0.06), startAngle, startAngle + 1.35);
+          ctx.stroke();
+        }
       }
 
       // Inner rising air ring
@@ -3994,12 +4006,22 @@
       x: plane.x + (Math.random() - 0.5) * 1100,
       y: bandY - Math.random() * 120,
       alt,
+      lift: Math.random() * 10,
       vx: (Math.random() - 0.5) * 24,
       radius: 44 + Math.random() * 18,
       colors: SKY_BALLOON_COLORS[Math.floor(Math.random() * SKY_BALLOON_COLORS.length)],
       gores: 10 + 2 * Math.floor(Math.random() * 3),
       phase: Math.random() * Math.PI * 2
     });
+  }
+
+  // Where a balloon is drawn: high above you while you're under the treeline, then level with
+  // you once you've climbed into the sky layer (so what you see matches what you can hit)
+  function balloonDisplayAlt(b, time) {
+    const bob = Math.sin(time * 0.4 + b.phase) * 2;
+    const overhead = plane.z + 30 + b.lift;
+    const level = plane.z + bob;
+    return overhead + (level - overhead) * treeHaze;
   }
 
   // Perspective from the drone (DRONE_HEIGHT above the plane): things higher up look bigger
@@ -4015,21 +4037,22 @@
 
   // Returns true if the flight ended this frame
   function updateSkyBalloons(dt, time) {
+    // Balloons float in the sky layer above the treeline. Below the treeline you pass under them;
+    // once you're above the trees you're up in their layer and can hit them.
     for (let i = 0; i < skyBalloons.length; i++) {
       const b = skyBalloons[i];
       b.x += b.vx * dt;
-      b.curAlt = b.alt + Math.sin(time * 0.4 + b.phase) * 3;
+      b.curAlt = balloonDisplayAlt(b, time);
     }
     if (zenMode) return false;
     for (let i = 0; i < skyBalloons.length; i++) {
       const b = skyBalloons[i];
-      const dz = plane.z - b.curAlt;           // envelope spans roughly -14 (basket) .. +12 (crown)
       const d = Math.hypot(plane.x - b.x, plane.y - b.y);
-      if (!skyBalloonWarned && aboveTrees && Math.abs(dz) < 22 && d < 650 && b.y < plane.y) {
+      if (!skyBalloonWarned && aboveTrees && d < 650 && b.y < plane.y) {
         skyBalloonWarned = true;
         whisper('Hot air balloons drift up here — steer around them');
       }
-      if (plane.invulnerableTimer <= 0 && dz > -16 && dz < 12 && d < b.radius * 0.85 + 8) {
+      if (plane.invulnerableTimer <= 0 && plane.z >= TREELINE && d < b.radius * 0.85 + 8) {
         endFlight('BRUSHED A HIGH-FLYING BALLOON', b);
         return true;
       }
