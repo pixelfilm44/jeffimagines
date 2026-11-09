@@ -39,6 +39,9 @@ html { scroll-behavior: smooth; }
   --corn-bg: #FFF3D6;
   --corn-accent: #D9822B;
 
+  --zen-bg: #DCE8DF;
+  --zen-accent: #3E8A99;
+
   --radius-lg: 28px;
   --radius-md: 18px;
   --radius-sm: 10px;
@@ -348,6 +351,9 @@ img, svg { display: block; max-width: 100%; }
 .card-corn { flex-direction: column; }
 .card-corn .card-art { width: auto; }
 .card-corn .art-shot { width: 100%; max-height: none; }
+
+.card-zen { --card-accent: var(--zen-accent); }
+.card-zen .card-art { background: var(--zen-bg); }
 
 /* ============ Films ============ */
 .films {
