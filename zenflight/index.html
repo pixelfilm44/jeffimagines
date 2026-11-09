@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#d7e6de" />
+  <title>Drift — A Peaceful Paper Airplane Journey</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Plus+Jakarta+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="game-container">
+    <canvas id="game-canvas"></canvas>
+
+    <!-- Subtle Vignette & Sun Flare Overlay -->
+    <div id="atmosphere-overlay"></div>
+
+    <!-- Top HUD -->
+    <header id="hud-top" class="hud-hidden">
+      <div class="hud-stats">
+        <div class="stat-pill">
+          <span class="stat-label">DISTANCE</span>
+          <span id="stat-distance" class="stat-value">0 m</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-label">ALTITUDE</span>
+          <span id="stat-altitude" class="stat-value">42 m</span>
+        </div>
+        <div class="stat-pill">
+          <span class="stat-label">WIND RINGS</span>
+          <span id="stat-thermals" class="stat-value">0</span>
+        </div>
+      </div>
+
+      <div class="hud-controls">
+        <button id="btn-biome" class="icon-btn" title="Change Time of Day / Scenery">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <circle cx="12" cy="12" r="4"/>
+            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+          </svg>
+          <span id="biome-label">Golden Valley</span>
+        </button>
+
+        <button id="btn-zen" class="icon-btn" title="Toggle Zen Mode (No Obstacle Collisions)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+          <span id="zen-label">Zen: Off</span>
+        </button>
+
+        <button id="btn-tilt" class="icon-btn" title="Toggle Phone Tilt Steering">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <rect x="6" y="2" width="12" height="20" rx="2" ry="2"/>
+            <line x1="12" y1="18" x2="12.01" y2="18"/>
+          </svg>
+          <span id="tilt-label">Tilt: On</span>
+        </button>
+
+        <button id="btn-audio" class="icon-btn" title="Toggle Ambient Soundscape">
+          <svg id="icon-sound-on" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+          </svg>
+          <svg id="icon-sound-off" class="hidden" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+            <line x1="23" y1="9" x2="17" y2="15"/>
+            <line x1="17" y1="9" x2="23" y2="15"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Interactive Breeze Touch Zones Indicator (fades out after first few turns) -->
+    <div id="breeze-hints" class="hud-hidden">
+      <div class="breeze-zone left-zone" id="hint-left">
+        <div class="breeze-icon">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27A2.5 2.5 0 1 1 19.5 12H2"/>
+          </svg>
+        </div>
+        <span>Tap or Tilt Left<br><small>Steer Left</small></span>
+      </div>
+      <div class="breeze-zone right-zone" id="hint-right">
+        <div class="breeze-icon">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="transform: scaleX(-1);">
+            <path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27A2.5 2.5 0 1 1 19.5 12H2"/>
+          </svg>
+        </div>
+        <span>Tap or Tilt Right<br><small>Steer Right</small></span>
+      </div>
+    </div>
+
+    <!-- Title / Launch Screen -->
+    <section id="title-screen" class="overlay-screen active">
+      <div class="title-card">
+        <span class="subtitle-eyebrow">A MEDITATIVE AERIAL JOURNEY</span>
+        <h1 class="main-title">Paper Drift</h1>
+        <p class="title-description">
+          Fold a sheet of paper, flip it into the canyon breeze, and watch from high above as it glides over rivers, meadows, and whispering pines.
+        </p>
+
+        <div class="biome-selector">
+          <button class="biome-chip active" data-biome="0">Golden Valley</button>
+          <button class="biome-chip" data-biome="1">Sakura Highlands</button>
+          <button class="biome-chip" data-biome="2">Nordic Fjord</button>
+          <button class="biome-chip" data-biome="3">Starlight Dusk</button>
+        </div>
+
+        <button id="btn-launch" class="primary-btn">
+          <span>Flip Paper Airplane</span>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="22" y1="2" x2="11" y2="13"/>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+          </svg>
+        </button>
+
+        <div class="controls-footnote">
+          <span><strong>Tap Left / Right</strong> or <strong>Tilt Phone</strong> to steer</span>
+          <span class="dot">•</span>
+          <span>Glide under <strong>Wind Gusts &amp; Thermals</strong> to lift up &amp; prolong your flight</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Soft Landing / Rest Screen -->
+    <section id="landing-screen" class="overlay-screen">
+      <div class="title-card compact">
+        <span id="landing-reason" class="subtitle-eyebrow">GENTLE LANDING IN THE MEADOW</span>
+        <h2 class="secondary-title">Flight Complete</h2>
+        <div id="new-record-badge" class="new-record-badge hidden">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+          </svg>
+          <span>New Longest Glide Record!</span>
+        </div>
+        
+        <div class="summary-grid">
+          <div class="summary-item">
+            <span class="summary-num" id="final-distance">0 m</span>
+            <span class="summary-lbl">Distance Flown</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-num" id="final-thermals">0</span>
+            <span class="summary-lbl">Gusts &amp; Thermals</span>
+          </div>
+          <div class="summary-item" id="best-summary-item">
+            <span class="summary-num" id="final-best">0 m</span>
+            <span class="summary-lbl">Longest Glide</span>
+          </div>
+        </div>
+
+        <div class="action-row">
+          <button id="btn-relaunch" class="primary-btn">
+            <span>Flip Another Plane</span>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="22" y1="2" x2="11" y2="13"/>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>
