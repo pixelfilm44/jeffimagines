@@ -1,5 +1,5 @@
 /**
- * Paper Drift — A Peaceful Paper Airplane Drone-View Web Game
+ * Zen Flight — A Peaceful Paper Airplane Drone-View Web Game
  */
 
 (() => {
