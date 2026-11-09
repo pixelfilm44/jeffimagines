@@ -666,3 +666,36 @@ html, body {
     margin-top: 12px;
   }
 }
+
+/* Hidden paper cranes summary */
+.crane-panel {
+  margin: 0 auto 18px;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.crane-row {
+  display: flex;
+  gap: 8px;
+}
+
+.crane-icon svg {
+  display: block;
+  fill: rgba(31, 45, 46, 0.12);
+  transition: fill 0.4s ease, transform 0.4s ease;
+}
+
+.crane-icon.found svg {
+  fill: #e9b949;
+  filter: drop-shadow(0 1px 2px rgba(201, 143, 42, 0.45));
+}
+
+.crane-note {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+}

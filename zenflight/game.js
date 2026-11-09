@@ -449,7 +449,8 @@
 
   let currentBiomeIndex = 0;
   let zenMode = false;
-  let bestDistance = Number(localStorage.getItem('paper_drift_best') || 0);
+  let bestDistance = 0;
+  try { bestDistance = Number(localStorage.getItem('paper_drift_best') || 0) || 0; } catch (e) { /* storage unavailable */ }
 
   const STATE = {
     TITLE: 'TITLE',
@@ -521,6 +522,9 @@
     return 1.0;
   }
 
+  // Leaf / petal particle density (1 = original amount)
+  const LEAF_DENSITY = 0.75;
+
   // World Entities
   let obstacles = [];
   let thermals = [];
@@ -553,6 +557,13 @@
   let fireflies = [];        // Starlight Dusk ambient fireflies
   let fireflyFollowers = []; // fireflies trailing the plane
   let fireflyClusters = [];  // collectible clusters that light lanterns
+
+  // Hidden paper cranes: a fresh set tucked into the valley on every run
+  const CRANES_PER_RUN = 5;
+  let cranes = [];           // placed cranes in the world
+  let craneTargets = [];     // world Y positions still waiting to be placed this run
+  let cranesFound = 0;
+  let cranesTotal = loadCraneTotal();
 
   let spawnedUpToY = 400; // We generate world chunks ahead (as Y decreases)
 
@@ -616,6 +627,14 @@
     fireflies = [];
     fireflyFollowers = [];
     fireflyClusters = [];
+    cranes = [];
+    cranesFound = 0;
+    craneTargets = [];
+    let craneY = -1100 - Math.random() * 500;
+    for (let k = 0; k < CRANES_PER_RUN; k++) {
+      craneTargets.push(craneY);
+      craneY -= 1700 + Math.random() * 1300;
+    }
     escortTimer = 12 + Math.random() * 10;
     wakeTimer = 0;
     wakeDist = 0;
@@ -624,7 +643,7 @@
     generateWorldUntil(plane.y - 1800);
 
     // Pre-populate ambient floating petals/dandelion seeds
-    const ambientPetalCount = 45 + Math.round((bloomLevels[currentBiomeIndex] || 0) * 40);
+    const ambientPetalCount = Math.round((45 + (bloomLevels[currentBiomeIndex] || 0) * 40) * LEAF_DENSITY);
     for (let i = 0; i < ambientPetalCount; i++) {
       floatingPetals.push({
         x: plane.x + (Math.random() - 0.5) * width * 1.4,
@@ -826,6 +845,7 @@
       }
 
       spawnLife(bandY);
+      placeHiddenCranes(bandY);
 
       spawnedUpToY -= 140;
     }
@@ -1047,12 +1067,13 @@
     const isNewRecord = distMeters > bestDistance && distMeters > 0;
     if (isNewRecord) {
       bestDistance = distMeters;
-      localStorage.setItem('paper_drift_best', String(bestDistance));
+      try { localStorage.setItem('paper_drift_best', String(bestDistance)); } catch (e) { /* storage unavailable */ }
     }
     plane.isNewRecord = isNewRecord;
 
     bankBloom();
     showEndBloom(!!obstacleHit);
+    showEndCranes();
 
     landingReason.textContent = reasonText;
     finalDistance.textContent = `${distMeters.toLocaleString()} m`;
@@ -1098,8 +1119,8 @@
       plane.tumbleVy = ny * 58 + forwardY * (plane.speed * 0.22);
 
       // Rustle a few peaceful petals/leaves from the contact point
-      for (let p = 0; p < 8; p++) {
-        const ang = (p / 8) * Math.PI * 2 + Math.random() * 0.4;
+      for (let p = 0; p < 6; p++) {
+        const ang = (p / 6) * Math.PI * 2 + Math.random() * 0.4;
         floatingPetals.push({
           x: plane.x + Math.cos(ang) * 10,
           y: plane.y + Math.sin(ang) * 10,
@@ -1458,8 +1479,8 @@
             curveFreq: 7
           });
         }
-        for (let p = 0; p < 14; p++) {
-          const ang = (p / 14) * Math.PI * 2;
+        for (let p = 0; p < 11; p++) {
+          const ang = (p / 11) * Math.PI * 2;
           floatingPetals.push({
             x: th.x + Math.cos(ang) * 16,
             y: th.y + Math.sin(ang) * 16,
@@ -1508,6 +1529,7 @@
 
     // Living world: wake petals, river ripples, creatures, rainbow & escort birds
     updateLife(dt, time, true);
+    updateHiddenCranes(dt, true);
 
     // Update Wind Ribbons
     for (let i = windRibbons.length - 1; i >= 0; i--) {
@@ -1613,6 +1635,7 @@
     creatures = creatures.filter((c) => c.y < cutoffY);
     mists = mists.filter((m) => m.y < cutoffY);
     fireflyClusters = fireflyClusters.filter((f) => f.y < cutoffY);
+    cranes = cranes.filter((c) => c.y < cutoffY || (c.found && c.anim < 1));
     rainbows = rainbows.filter((r) => r.y < cutoffY);
   }
 
@@ -1659,6 +1682,7 @@
 
     // 8. 3D-Projected Obstacles (Sorted back-to-front by depth/height for natural overlap)
     drawObstacles3D(biome, time);
+    drawHiddenCranes(time);
 
     drawRainbows(time);
 
@@ -1732,54 +1756,189 @@
     }
   }
 
+  // Parse '#rrggbb' into [r, g, b] (cached) for blending water shades
+  const hexCache = {};
+  function hexRgb(hex) {
+    if (hexCache[hex]) return hexCache[hex];
+    const n = parseInt(hex.slice(1), 16);
+    return (hexCache[hex] = [(n >> 16) & 255, (n >> 8) & 255, n & 255]);
+  }
+  function mixRgb(a, b, t, alpha = 1) {
+    const A = hexRgb(a), B = hexRgb(b);
+    return `rgba(${Math.round(A[0] + (B[0] - A[0]) * t)}, ${Math.round(A[1] + (B[1] - A[1]) * t)}, ${Math.round(A[2] + (B[2] - A[2]) * t)}, ${alpha})`;
+  }
+
   function drawMeanderingRiver(biome, viewTop, viewBottom, time) {
-    const step = 28;
+    const step = 24;
     const startY = Math.floor(viewTop / step) * step;
     const endY = Math.ceil(viewBottom / step) * step;
 
-    const leftBank = [];
-    const rightBank = [];
-    const leftWater = [];
-    const rightWater = [];
-    const leftDeep = [];
-    const rightDeep = [];
-
+    const rows = [];
     for (let y = startY; y <= endY; y += step) {
       const cx = riverCenterAt(y);
       const rw = riverWidthAt(y);
-      leftBank.push({ x: cx - rw - 18, y });
-      rightBank.push({ x: cx + rw + 18, y });
-      leftWater.push({ x: cx - rw, y });
-      rightWater.push({ x: cx + rw, y });
-      leftDeep.push({ x: cx - rw * 0.52, y });
-      rightDeep.push({ x: cx + rw * 0.52, y });
+      // Downstream direction (+Y) along the channel
+      const dx = riverCenterAt(y + 6) - riverCenterAt(y - 6);
+      const len = Math.hypot(dx, 12);
+      rows.push({ y, cx, rw, tx: dx / len, ty: 12 / len });
     }
+    if (rows.length < 2) return;
 
-    const fillRibbon = (leftPts, rightPts, color) => {
-      if (leftPts.length === 0) return;
-      ctx.fillStyle = color;
+    // Fill a band of the channel between two lateral fractions (-1 = left edge, +1 = right edge)
+    const band = (fromL, fromR, fill, wobble = 0) => {
+      ctx.fillStyle = fill;
       ctx.beginPath();
-      ctx.moveTo(leftPts[0].x, leftPts[0].y);
-      for (let i = 1; i < leftPts.length; i++) ctx.lineTo(leftPts[i].x, leftPts[i].y);
-      for (let i = rightPts.length - 1; i >= 0; i--) ctx.lineTo(rightPts[i].x, rightPts[i].y);
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        const w = wobble ? Math.sin(r.y * 0.021 + time * 0.6) * wobble + Math.sin(r.y * 0.057) * wobble * 0.6 : 0;
+        const x = r.cx + fromL * r.rw + w;
+        if (i === 0) ctx.moveTo(x, r.y); else ctx.lineTo(x, r.y);
+      }
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const r = rows[i];
+        const w = wobble ? Math.sin(r.y * 0.019 + 2.1 + time * 0.6) * wobble + Math.sin(r.y * 0.049 + 1) * wobble * 0.6 : 0;
+        ctx.lineTo(r.cx + fromR * r.rw + w, r.y);
+      }
       ctx.closePath();
       ctx.fill();
     };
 
-    fillRibbon(leftBank, rightBank, biome.sandBank);
-    fillRibbon(leftWater, rightWater, biome.riverWater);
-    fillRibbon(leftDeep, rightDeep, biome.riverDeep);
+    const sandW = 18;
+    // Dry sand bank, then a darker damp strip at the waterline
+    ctx.fillStyle = biome.sandBank;
+    ctx.beginPath();
+    rows.forEach((r, i) => (i ? ctx.lineTo(r.cx - r.rw - sandW, r.y) : ctx.moveTo(r.cx - r.rw - sandW, r.y)));
+    for (let i = rows.length - 1; i >= 0; i--) ctx.lineTo(rows[i].cx + rows[i].rw + sandW, rows[i].y);
+    ctx.closePath();
+    ctx.fill();
+    band(-1.07, 1.07, mixRgb(biome.sandBank, biome.riverDeep, 0.35), 2.5);
 
-    // Animated water current lines & ripples
+    // Water body: shallow, slightly sandy-tinted edges blending smoothly into a deep channel
+    const layers = 7;
+    for (let k = 0; k < layers; k++) {
+      const t = k / (layers - 1);           // 0 = edge, 1 = deep centre
+      const f = 1 - t * 0.78;               // lateral extent of this layer
+      const shallow = mixRgb(biome.riverWater, biome.sandBank, 0.32);
+      const col = k === 0 ? shallow : mixRgb(biome.riverWater, biome.riverDeep, Math.pow(t, 1.3));
+      band(-f, f, col, k === 0 ? 2.5 : 0);
+    }
+
+    // Soft sky reflection streak along one side of the channel
+    band(0.18, 0.62, 'rgba(255, 255, 255, 0.06)', 6);
+    band(-0.85, -0.55, 'rgba(255, 255, 255, 0.035)', 4);
+
+    // Downstream flow streaks: thin current lines that slide with the water
+    const flowSpeed = 34;
+    ctx.lineCap = 'round';
     ctx.strokeStyle = biome.riverFoam;
-    ctx.lineWidth = 1.6;
-    for (let i = 0; i < waterRipples.length; i++) {
-      const wr = waterRipples[i];
-      const pulse = Math.sin(time * 2.2 + wr.phase) * 0.5 + 0.5;
+    const seg = 3; // rows per streak
+    for (let pass = 0; pass < 2; pass++) {
+      ctx.lineWidth = pass === 0 ? 2.4 : 1.1;
+      const baseAlpha = pass === 0 ? 0.16 : 0.42;
+      for (let i = 0; i < rows.length - seg; i++) {
+        const r = rows[i];
+        const slot = Math.round(r.y / step);
+        for (let lane = 0; lane < 3; lane++) {
+          const h = hash1D(slot * 3.17 + lane * 11.3 + pass * 5.1);
+          if (h > 0.42) continue;
+          const lat = (hash1D(slot * 1.9 + lane * 7.7 + pass) * 2 - 1) * 0.82;
+          // Centre water moves faster than the edges
+          const speed = flowSpeed * (1.25 - Math.abs(lat) * 0.7);
+          const shift = ((time * speed + h * 400) % (step * seg));
+          ctx.globalAlpha = baseAlpha * Math.sin((shift / (step * seg)) * Math.PI);
+          const len = (0.45 + h) * step * 1.6;
+          const y0 = r.y + shift;
+          const cx0 = riverCenterAt(y0) + lat * riverWidthAt(y0);
+          const y1 = y0 + len;
+          const cx1 = riverCenterAt(y1) + lat * riverWidthAt(y1);
+          ctx.beginPath();
+          ctx.moveTo(cx0, y0);
+          ctx.quadraticCurveTo((cx0 + cx1) / 2 + Math.sin(y0 * 0.05 + time) * 2, (y0 + y1) / 2, cx1, y1);
+          ctx.stroke();
+        }
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    // Lapping foam line where water meets the bank
+    ctx.strokeStyle = biome.riverFoam;
+    ctx.lineWidth = 1.3;
+    for (const side of [-1, 1]) {
+      ctx.globalAlpha = 0.55;
       ctx.beginPath();
-      ctx.arc(wr.x, wr.y + ((time * 24) % 18), wr.radius * (0.6 + pulse * 0.5), 0, Math.PI * 2);
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        const lap = Math.sin(r.y * 0.045 + time * 1.4 * side) * 1.8 + Math.sin(r.y * 0.11 - time * 0.9) * 1.0;
+        const x = r.cx + side * (r.rw - 2 + lap);
+        if (i === 0) ctx.moveTo(x, r.y); else ctx.lineTo(x, r.y);
+      }
       ctx.stroke();
     }
+    ctx.globalAlpha = 1;
+
+    // Foam wakes trailing downstream of rocks sitting in the river
+    for (let i = 0; i < obstacles.length; i++) {
+      const ob = obstacles[i];
+      if (ob.type !== 'rock' || ob.y < viewTop || ob.y > viewBottom) continue;
+      if (Math.abs(ob.x - riverCenterAt(ob.y)) > riverWidthAt(ob.y) - 10) continue;
+      const rr = ob.radius * 0.8;
+      for (let k = 0; k < 3; k++) {
+        const t = ((time * 0.5 + k / 3) % 1);
+        ctx.globalAlpha = 0.5 * (1 - t);
+        ctx.strokeStyle = biome.riverFoam;
+        ctx.lineWidth = 1.6;
+        const spread = rr * (0.9 + t * 0.9);
+        const down = rr * 0.4 + t * rr * 2.4;
+        ctx.beginPath();
+        ctx.moveTo(ob.x - spread, ob.y + down);
+        ctx.quadraticCurveTo(ob.x, ob.y + down - rr * 0.9, ob.x + spread, ob.y + down);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 0.45;
+      ctx.fillStyle = biome.riverFoam;
+      ctx.beginPath();
+      ctx.ellipse(ob.x, ob.y + rr * 0.15, rr * 1.12, rr * 0.8, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // Gentle surface boils drifting downstream
+    ctx.strokeStyle = biome.riverFoam;
+    ctx.lineWidth = 1;
+    for (let i = 0; i < waterRipples.length; i++) {
+      const wr = waterRipples[i];
+      const life = ((time * 0.35 + wr.phase / (Math.PI * 2)) % 1);
+      const y = wr.y + life * 60;
+      const x = wr.x + (riverCenterAt(y) - riverCenterAt(wr.y));
+      const rad = wr.radius * (0.4 + life * 0.9);
+      ctx.globalAlpha = 0.45 * Math.sin(life * Math.PI);
+      ctx.beginPath();
+      ctx.ellipse(x, y, rad, rad * 0.62, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // Sun glints twinkling on the surface
+    ctx.fillStyle = 'rgba(255, 253, 240, 1)';
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const slot = Math.round(r.y / step);
+      for (let g = 0; g < 2; g++) {
+        const h = hash1D(slot * 4.3 + g * 9.1 + 0.7);
+        const tw = Math.sin(time * (2.2 + h * 2.5) + h * 40);
+        if (tw < 0.82) continue;
+        const lat = (hash1D(slot * 2.6 + g * 3.3) * 2 - 1) * 0.75;
+        const gy = r.y + hash1D(slot + g * 13.7) * step;
+        const gx = riverCenterAt(gy) + lat * riverWidthAt(gy);
+        const a = (tw - 0.82) / 0.18;
+        ctx.globalAlpha = 0.75 * a;
+        ctx.beginPath();
+        ctx.ellipse(gx, gy, 1.2 + a * 2.2, 0.7 + a * 0.6, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+    ctx.lineCap = 'butt';
   }
 
   function drawGroundDecor(biome, time) {
@@ -2560,9 +2719,10 @@
     }
   }
 
-  function addWakePetal(x, y, color, ttl) {
-    if (floatingPetals.length > 420) return;
-    floatingPetals.push({
+  function addWakePetal(x, y, color, ttl, force) {
+    if (floatingPetals.length > 315) return null;
+    if (!force && Math.random() > LEAF_DENSITY) return null;
+    const petal = {
       x, y, z: plane.z,
       size: 2.2 + Math.random() * 1.8,
       vx: (Math.random() - 0.5) * 40,
@@ -2570,7 +2730,9 @@
       phase: Math.random() * Math.PI * 2,
       age: 0, ttl: ttl || 2.4 + Math.random() * 1.2,
       color: color || null
-    });
+    };
+    floatingPetals.push(petal);
+    return petal;
   }
 
   // --- Main living-world update ---
@@ -2858,10 +3020,9 @@
         plane.z = Math.min(68, plane.z + 8);
         whisper('You flew through a rainbow');
         audio.playRainbowSound();
-        for (let k = 0; k < 21; k++) {
-          const ang = (k / 21) * Math.PI * 2;
-          addWakePetal(plane.x + Math.cos(ang) * 14, plane.y + Math.sin(ang) * 14, RAINBOW_COLORS[k % 7], 3.6);
-          const last = floatingPetals[floatingPetals.length - 1];
+        for (let k = 0; k < 16; k++) {
+          const ang = (k / 16) * Math.PI * 2;
+          const last = addWakePetal(plane.x + Math.cos(ang) * 14, plane.y + Math.sin(ang) * 14, RAINBOW_COLORS[k % 7], 3.6, true);
           if (last) {
             last.vx = Math.cos(ang) * (40 + Math.random() * 40);
             last.vy = Math.sin(ang) * (40 + Math.random() * 40) - 30;
@@ -2990,8 +3151,8 @@
     ob.grazed = true;
     flightBonusBloom += 0.005;
     const cols = FAUNA[1].bloomColors;
-    for (let k = 0; k < 26; k++) {
-      if (floatingPetals.length > 440) break;
+    for (let k = 0; k < 20; k++) {
+      if (floatingPetals.length > 330) break;
       const ang = Math.random() * Math.PI * 2;
       floatingPetals.push({
         x: ob.x + Math.cos(ang) * ob.radius * 0.6,
@@ -3232,6 +3393,185 @@
         const ang = f.a + time * f.s;
         glow(c.x + Math.cos(ang) * f.d, c.y + Math.sin(ang) * f.d * 0.8, f.seed, 1.1);
       }
+    }
+  }
+
+
+  // ===================================================================
+  // HIDDEN PAPER CRANES — five tucked away on every run
+  // ===================================================================
+  const craneRow = document.getElementById('crane-row');
+  const craneNote = document.getElementById('crane-note');
+
+  function loadCraneTotal() {
+    try { return Math.max(0, parseInt(localStorage.getItem('zen_cranes_total'), 10) || 0); } catch (e) { return 0; }
+  }
+
+  function saveCraneTotal() {
+    try { localStorage.setItem('zen_cranes_total', String(cranesTotal)); } catch (e) { /* storage unavailable */ }
+  }
+
+  function placeHiddenCranes(bandY) {
+    while (craneTargets.length && craneTargets[0] >= bandY - 140) {
+      const ty = craneTargets.shift();
+      let spot = null;
+
+      // Prefer perching it at the edge of a tree canopy near the flight path
+      const candidates = obstacles.filter((ob) =>
+        ob.type === 'tree' && Math.abs(ob.y - ty) < 520 && Math.abs(ob.x - plane.x) < 520);
+      if (candidates.length) {
+        const ob = candidates[Math.floor(Math.random() * candidates.length)];
+        const ang = Math.random() * Math.PI * 2;
+        const d = ob.radius * 1.02;
+        spot = { x: ob.x + Math.cos(ang) * d, y: ob.y + Math.sin(ang) * d, nook: 'tree' };
+      } else {
+        // Otherwise hide it among the reeds of the riverbank
+        const side = Math.random() < 0.5 ? -1 : 1;
+        const rw = riverWidthAt(ty);
+        spot = { x: riverCenterAt(ty) + side * (rw + 10), y: ty, nook: 'bank' };
+      }
+
+      // Never inside an obstacle's hit zone
+      let blocked = false;
+      for (let j = obstacles.length - 1; j >= 0 && j >= obstacles.length - 40; j--) {
+        const ob = obstacles[j];
+        if (Math.hypot(ob.x - spot.x, ob.y - spot.y) < ob.hitRadius + 4) { blocked = true; break; }
+      }
+      if (blocked) {
+        spot.x += (spot.x > plane.x ? 1 : -1) * 40;
+      }
+
+      cranes.push({
+        x: spot.x, y: spot.y, nook: spot.nook,
+        angle: Math.random() * Math.PI * 2,
+        seed: Math.random() * 10,
+        found: false, anim: 0,
+        hue: currentBiomeIndex
+      });
+    }
+  }
+
+  function updateHiddenCranes(dt, interactive) {
+    for (let i = 0; i < cranes.length; i++) {
+      const c = cranes[i];
+      if (c.found) {
+        c.anim = Math.min(1, c.anim + dt * 0.55);
+        continue;
+      }
+      if (!interactive) continue;
+      if (Math.hypot(plane.x - c.x, plane.y - c.y) < 30) {
+        c.found = true;
+        c.anim = 0;
+        c.fx = c.x; c.fy = c.y;
+        c.flyDir = plane.heading + (Math.random() - 0.5) * 0.6;
+        cranesFound++;
+        cranesTotal++;
+        saveCraneTotal();
+        flightBonusBloom += 0.01;
+        whisper(cranesFound >= CRANES_PER_RUN
+          ? 'Every hidden crane found!'
+          : `Hidden paper crane found · ${cranesFound} of ${CRANES_PER_RUN}`);
+        audio.playPluck(783.99, 1.4, 0.03);
+        setTimeout(() => audio.playPluck(1046.5, 1.6, 0.024), 110);
+        setTimeout(() => audio.playPluck(1318.5, 1.8, 0.018), 230);
+      }
+    }
+  }
+
+  function drawCraneShape(size, flap) {
+    // Simple origami crane seen from above: body diamond, two wings, neck & tail points
+    const w = size * (0.55 + 0.45 * flap);
+    ctx.fillStyle = '#fffdf6';
+    ctx.beginPath();
+    ctx.moveTo(0, -size * 0.25); ctx.lineTo(-w, size * 0.1); ctx.lineTo(0, size * 0.2); ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#f1e7d4';
+    ctx.beginPath();
+    ctx.moveTo(0, -size * 0.25); ctx.lineTo(w, size * 0.1); ctx.lineTo(0, size * 0.2); ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#e9b949';
+    ctx.beginPath();
+    ctx.moveTo(0, -size * 0.95); ctx.lineTo(size * 0.12, -size * 0.2); ctx.lineTo(0, size * 0.75);
+    ctx.lineTo(-size * 0.12, -size * 0.2); ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#c98f2a';
+    ctx.beginPath();
+    ctx.moveTo(0, -size * 0.95); ctx.lineTo(-size * 0.2, -size * 0.78); ctx.lineTo(-size * 0.03, -size * 0.72); ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawHiddenCranes(time) {
+    if (cranes.length === 0) return;
+    const halfY = (height / camera.zoom) * 0.8 + 120;
+    for (let i = 0; i < cranes.length; i++) {
+      const c = cranes[i];
+      if (Math.abs(c.y - camera.y) > halfY && !c.found) continue;
+
+      if (c.found) {
+        // Unfolds and flies away, rising toward the camera
+        const t = c.anim;
+        const dist = t * t * 420;
+        const x = c.fx + Math.sin(c.flyDir) * dist;
+        const y = c.fy - Math.cos(c.flyDir) * dist - t * 60;
+        const scale = 1 + t * 1.6;
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, 1 - t);
+        ctx.fillStyle = 'rgba(30, 40, 30, 0.18)';
+        ctx.beginPath(); ctx.ellipse(c.fx + Math.sin(c.flyDir) * dist * 0.6, c.fy - Math.cos(c.flyDir) * dist * 0.6, 8 * (1 - t), 4 * (1 - t), 0, 0, Math.PI * 2); ctx.fill();
+        ctx.translate(x, y);
+        ctx.rotate(c.flyDir);
+        drawCraneShape(11 * scale, 0.5 + 0.5 * Math.sin(time * 14));
+        ctx.restore();
+        continue;
+      }
+
+      const bob = Math.sin(time * 1.3 + c.seed) * 0.8;
+      ctx.save();
+      ctx.translate(c.x, c.y);
+      // tiny ground shadow
+      ctx.fillStyle = 'rgba(30, 40, 30, 0.2)';
+      ctx.beginPath(); ctx.ellipse(1.5, 2.5, 8, 4, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.translate(0, bob);
+      ctx.rotate(c.angle);
+      ctx.globalAlpha = 0.92;
+      drawCraneShape(10, 0.15);
+      ctx.restore();
+
+      // A brief glint every few seconds so sharp eyes can spot it
+      const cycle = (time + c.seed * 0.37) % 3.6;
+      if (cycle < 0.5) {
+        const k = Math.sin((cycle / 0.5) * Math.PI);
+        const r = 4 + k * 11;
+        ctx.save();
+        ctx.translate(c.x + 3, c.y - 4);
+        ctx.rotate(0.3);
+        ctx.strokeStyle = `rgba(255, 246, 205, ${(0.9 * k).toFixed(3)})`;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(-r, 0); ctx.lineTo(r, 0);
+        ctx.moveTo(0, -r); ctx.lineTo(0, r);
+        ctx.stroke();
+        ctx.fillStyle = `rgba(255, 252, 230, ${(0.95 * k).toFixed(3)})`;
+        ctx.beginPath(); ctx.arc(0, 0, 1.6 + k, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
+    }
+  }
+
+  function showEndCranes() {
+    if (!craneRow) return;
+    craneRow.innerHTML = '';
+    for (let k = 0; k < CRANES_PER_RUN; k++) {
+      const el = document.createElement('span');
+      el.className = 'crane-icon' + (k < cranesFound ? ' found' : '');
+      el.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20"><path d="M2 14 L10 11 L12 3 L14 11 L22 9 L15 15 L19 21 L12 17 L7 19 Z" /></svg>';
+      craneRow.appendChild(el);
+    }
+    if (craneNote) {
+      const lead = cranesFound >= CRANES_PER_RUN ? 'All hidden cranes found!'
+        : cranesFound === 0 ? 'No hidden cranes found — watch for a glint'
+        : `${cranesFound} of ${CRANES_PER_RUN} hidden cranes found`;
+      craneNote.textContent = `${lead} · ${cranesTotal} collected all-time`;
     }
   }
 
