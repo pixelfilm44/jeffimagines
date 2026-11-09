@@ -19,6 +19,9 @@
     <!-- Subtle Vignette & Sun Flare Overlay -->
     <div id="atmosphere-overlay"></div>
 
+    <!-- Gentle in-world messages -->
+    <div id="whisper" class="whisper" aria-live="polite"></div>
+
     <!-- Top HUD -->
     <header id="hud-top" class="hud-hidden">
       <div class="hud-stats">
@@ -111,6 +114,11 @@
           <button class="biome-chip" data-biome="3">Starlight Dusk</button>
         </div>
 
+        <div class="bloom-mini">
+          <div class="bloom-bar small"><div id="bloom-mini-fill" class="bloom-fill"></div></div>
+          <span id="bloom-mini-text"></span>
+        </div>
+
         <button id="btn-launch" class="primary-btn">
           <span>Flip Paper Airplane</span>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -152,6 +160,12 @@
             <span class="summary-num" id="final-best">0 m</span>
             <span class="summary-lbl">Longest Glide</span>
           </div>
+        </div>
+
+        <div class="bloom-panel">
+          <div class="bloom-head"><span id="bloom-title">Valley in bloom</span><span id="bloom-pct">0%</span></div>
+          <div class="bloom-bar"><div id="bloom-fill" class="bloom-fill"></div></div>
+          <div class="bloom-foot" id="bloom-note"></div>
         </div>
 
         <div class="action-row">

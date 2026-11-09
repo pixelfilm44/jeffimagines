@@ -363,6 +363,62 @@
       });
     }
 
+    playPluck(freq, dur = 0.9, vol = 0.04, type = 'sine') {
+      if (!this.initialized || !this.ctx || this.muted) return;
+      const now = this.ctx.currentTime;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, now);
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(vol, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0005, now + dur);
+      osc.connect(gain);
+      gain.connect(this.master);
+      osc.start(now);
+      osc.stop(now + dur + 0.05);
+    }
+
+    playCreatureSound(kind) {
+      if (kind === 'fish') {
+        this.playPluck(987.77, 0.6, 0.028);
+        setTimeout(() => this.playPluck(1318.5, 0.7, 0.022), 90);
+      } else {
+        this.playPluck(329.63, 0.7, 0.03, 'triangle');
+        setTimeout(() => this.playPluck(392.0, 0.8, 0.024, 'triangle'), 110);
+      }
+    }
+
+    playRainbowSound() {
+      [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach((f, i) => {
+        setTimeout(() => this.playPluck(f, 1.7, 0.032), i * 110);
+      });
+    }
+
+    playWaterSkimSound() {
+      if (!this.initialized || !this.ctx || this.muted) return;
+      const now = this.ctx.currentTime;
+      const len = Math.floor(this.ctx.sampleRate * 0.55);
+      const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+      const src = this.ctx.createBufferSource();
+      src.buffer = buf;
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(900, now);
+      filter.frequency.exponentialRampToValueAtTime(2100, now + 0.5);
+      filter.Q.value = 0.9;
+      const gain = this.ctx.createGain();
+      gain.gain.setValueAtTime(0.0008, now);
+      gain.gain.linearRampToValueAtTime(0.05, now + 0.12);
+      gain.gain.exponentialRampToValueAtTime(0.0005, now + 0.55);
+      src.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.master);
+      src.start(now);
+    }
+
     playAmbientPadNote() {
       if (!this.initialized || !this.ctx || this.muted) return;
       const now = this.ctx.currentTime;
@@ -473,6 +529,23 @@
   let windRibbons = [];
   let floatingPetals = [];
   let waterRipples = [];
+  let creatures = [];     // deer / rabbits on meadows, fish in the river
+  let wakeRipples = [];   // rings left on the water when skimming low
+  let rainbows = [];      // rare Golden Valley rainbows
+  let lastRainbowY = 0;
+  let escort = null;      // friendly birds that fly alongside for a while
+  let escortTimer = 14;
+  let sightings = 0;      // creature groups greeted this flight
+  let wakeTimer = 0;
+  let wakeDist = 0;
+  let skimSoundTimer = 0;
+  let bloomLevels = loadBloom();
+  let flightBiomeIdx = 0;
+  let flightStartBloom = 0;
+  let flightBloomBanked = 0;
+  let flightBonusBloom = 0;
+  let bankTimer = 0;
+  let rainbowFound = false;
 
   let spawnedUpToY = 400; // We generate world chunks ahead (as Y decreases)
 
@@ -525,12 +598,21 @@
     windRibbons = [];
     floatingPetals = [];
     waterRipples = [];
+    creatures = [];
+    wakeRipples = [];
+    rainbows = [];
+    lastRainbowY = 0;
+    escort = null;
+    escortTimer = 12 + Math.random() * 10;
+    wakeTimer = 0;
+    wakeDist = 0;
 
     spawnedUpToY = 450;
     generateWorldUntil(plane.y - 1800);
 
     // Pre-populate ambient floating petals/dandelion seeds
-    for (let i = 0; i < 45; i++) {
+    const ambientPetalCount = 45 + Math.round((bloomLevels[currentBiomeIndex] || 0) * 40);
+    for (let i = 0; i < ambientPetalCount; i++) {
       floatingPetals.push({
         x: plane.x + (Math.random() - 0.5) * width * 1.4,
         y: plane.y - Math.random() * height * 1.4,
@@ -730,6 +812,8 @@
         });
       }
 
+      spawnLife(bandY);
+
       spawnedUpToY -= 140;
     }
   }
@@ -925,6 +1009,13 @@
     }
     audio.resume();
     audio.playFlipSound();
+    flightBiomeIdx = currentBiomeIndex;
+    flightStartBloom = bloomLevels[flightBiomeIdx] || 0;
+    flightBloomBanked = 0;
+    flightBonusBloom = 0;
+    bankTimer = 0;
+    sightings = 0;
+    rainbowFound = false;
     resetWorld();
     launchProgress = 0;
     steerCount = 0;
@@ -946,6 +1037,9 @@
       localStorage.setItem('paper_drift_best', String(bestDistance));
     }
     plane.isNewRecord = isNewRecord;
+
+    bankBloom();
+    showEndBloom(!!obstacleHit);
 
     landingReason.textContent = reasonText;
     finalDistance.textContent = `${distMeters.toLocaleString()} m`;
@@ -1019,6 +1113,7 @@
   function setBiome(index) {
     currentBiomeIndex = (index + BIOMES.length) % BIOMES.length;
     biomeLabel.textContent = BIOMES[currentBiomeIndex].name;
+    updateTitleBloom();
     const envBtnName = document.getElementById('env-btn-name');
     if (envBtnName) envBtnName.textContent = BIOMES[currentBiomeIndex].name;
     biomeChips.forEach((chip, idx) => {
@@ -1089,6 +1184,7 @@
       camera.y = plane.y - 110;
       generateWorldUntil(plane.y - 1600);
       cleanupWorldBehind(plane.y + 900);
+      updateLife(dt, time, false);
       return;
     }
 
@@ -1113,10 +1209,12 @@
       }
       recordWingTrails();
       generateWorldUntil(plane.y - 1800);
+      updateLife(dt, time, false);
       return;
     }
 
     if (gameState === STATE.LANDING) {
+      updateLife(dt, time, false);
       if (plane.hitObstacle) {
         plane.tumbleTime += dt;
         // Gently flip over onto its back and flutter down like a real folded paper airplane
@@ -1369,6 +1467,8 @@
         ob.x = ob.baseX + Math.sin(time * ob.swaySpeed + ob.swayPhase) * 38;
       } else if (ob.type === 'windmill') {
         ob.bladeAngle += dt * 1.35;
+      } else if (ob.type === 'tree') {
+        updateTreeSway(ob, dt);
       }
 
       if (!zenMode && plane.invulnerableTimer <= 0) {
@@ -1392,18 +1492,8 @@
       return;
     }
 
-    // When flying low (under 15m), gently rustle petals/ripples beneath the wings so low altitude is unmistakable
-    if (plane.z < 15 && Math.random() < 0.25) {
-      floatingPetals.push({
-        x: plane.x + (Math.random() - 0.5) * 26,
-        y: plane.y + 10,
-        z: plane.z,
-        size: 2.2 + Math.random() * 1.8,
-        vx: (Math.random() - 0.5) * 35,
-        vy: -20 - Math.random() * 20,
-        phase: Math.random() * Math.PI * 2
-      });
-    }
+    // Living world: wake petals, river ripples, creatures, rainbow & escort birds
+    updateLife(dt, time, true);
 
     // Update Wind Ribbons
     for (let i = windRibbons.length - 1; i >= 0; i--) {
@@ -1425,11 +1515,19 @@
     }
 
     // Update Floating Petals / Dandelion Seeds
-    for (let i = 0; i < floatingPetals.length; i++) {
+    for (let i = floatingPetals.length - 1; i >= 0; i--) {
       const p = floatingPetals[i];
       p.phase += dt * 2.2;
       p.x += (p.vx + Math.sin(p.phase) * 14 + plane.breezeVel * 0.25) * dt;
       p.y += p.vy * dt;
+
+      if (p.ttl !== undefined) {
+        p.age += dt;
+        p.vx *= Math.pow(0.5, dt);
+        p.vy *= Math.pow(0.5, dt);
+        if (p.age >= p.ttl) floatingPetals.splice(i, 1);
+        continue;
+      }
 
       // Wrap around camera view
       if (p.y > camera.y + height * 0.75) {
@@ -1478,6 +1576,8 @@
     groundDecor = groundDecor.filter((g) => g.y < cutoffY);
     birdFlocks = birdFlocks.filter((b) => b.y < cutoffY);
     waterRipples = waterRipples.filter((w) => w.y < cutoffY);
+    creatures = creatures.filter((c) => c.y < cutoffY);
+    rainbows = rainbows.filter((r) => r.y < cutoffY);
   }
 
   // --- RENDERING (Drone-View 2.5D Oblique Top-Down Projection) ---
@@ -1506,9 +1606,11 @@
 
     // 3. Winding River & Shimmering Currents
     drawMeanderingRiver(biome, viewTop, viewBottom, time);
+    drawWakeRipples(biome);
 
     // 4. Ground-Level Details (Wildflowers, Shrubs, Bridges)
     drawGroundDecor(biome, time);
+    drawCreatures(biome, time);
 
     // 5. Low-Flying Flocks of Birds (below the airplane)
     drawBirdFlocks(time);
@@ -1522,12 +1624,15 @@
     // 8. 3D-Projected Obstacles (Sorted back-to-front by depth/height for natural overlap)
     drawObstacles3D(biome, time);
 
+    drawRainbows(time);
+
     // 9. Wingtip Condensation Trails & Breeze Wind Ribbons
     drawWingTrails();
     drawWindRibbons();
 
     // 10. The Paper Airplane (3D Origami Projection with Sun Shading)
     drawPaperAirplane(biome);
+    drawEscortBirds(time);
 
     // 11. High-Altitude Drifting Petals / Dandelion Seeds
     drawFloatingPetals(biome);
@@ -1644,9 +1749,13 @@
 
         // Tiny flower blossoms
         ctx.fillStyle = biome.petalColor;
-        for (let k = 0; k < 5; k++) {
+        const bloomNow = bloomLevels[currentBiomeIndex] || 0;
+        const blossomCount = 5 + Math.round(bloomNow * 5);
+        const fa = FAUNA[currentBiomeIndex];
+        for (let k = 0; k < blossomCount; k++) {
           const ang = d.seed + k * 1.25;
-          const dist = (k * 0.19) * d.radius;
+          const dist = ((k % 5) * 0.19 + (k >= 5 ? 0.09 : 0)) * d.radius;
+          ctx.fillStyle = (bloomNow > 0.2 && k % 2 === 1) ? fa.bloomColors[k % fa.bloomColors.length] : biome.petalColor;
           ctx.beginPath();
           ctx.arc(d.x + Math.cos(ang) * dist, d.y + Math.sin(ang) * dist, 2.2, 0, Math.PI * 2);
           ctx.fill();
@@ -1656,6 +1765,8 @@
         ctx.beginPath();
         ctx.arc(d.x, d.y, d.radius * 0.7, 0, Math.PI * 2);
         ctx.fill();
+      } else if (d.type === 'bloom') {
+        drawBloomSpot(d, time);
       } else if (d.type === 'bridge') {
         ctx.save();
         ctx.translate(d.x, d.y);
@@ -1782,7 +1893,7 @@
 
       if (ob.type === 'tree') {
         const palette = ob.isAutumn ? biome.autumnTreeLayers : biome.treeLayers;
-        const sway = Math.sin(time * 1.6 + ob.swayPhase) * 2.5;
+        const sway = Math.sin(time * 1.6 + ob.swayPhase) * 2.5 + (ob.swayOff || 0);
 
         // Ground shadow (cast to the lower-left by the high sun)
         ctx.fillStyle = 'rgba(18, 30, 28, 0.18)';
@@ -2106,13 +2217,699 @@
       ctx.save();
       ctx.translate(p.x, p.y);
       ctx.rotate(p.phase);
-      ctx.globalAlpha = 0.72;
+      let petalAlpha = 0.72;
+      if (p.ttl !== undefined) {
+        const lifeT = p.age / p.ttl;
+        petalAlpha *= lifeT < 0.15 ? lifeT / 0.15 : 1 - (lifeT - 0.15) / 0.85;
+      }
+      ctx.globalAlpha = Math.max(0, petalAlpha);
+      ctx.fillStyle = p.color || biome.petalColor;
       ctx.beginPath();
       ctx.ellipse(0, 0, p.size, p.size * 0.55, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
     }
   }
+
+
+  // ===================================================================
+  // LIVING WORLD — wake, ripples, creatures, rainbow, escort birds, bloom
+  // ===================================================================
+  const FAUNA = [
+    { // Golden Valley
+      land: 'deer', landColor: '#c99a64', landSpot: '#f3e3c4', antlers: false,
+      fishColors: ['#ef7b45', '#fff3e0'], glow: false,
+      bloom: 'flowers', bloomColors: ['#f6c453', '#f08a5d', '#fff6e8', '#c9a0dc'],
+      greet: { land: 'A deer looks up', fish: 'Koi shimmer below' }
+    },
+    { // Sakura Highlands
+      land: 'rabbit', landColor: '#eadbd6', landSpot: '#ffffff', antlers: false,
+      fishColors: ['#ef8fa8', '#ffffff'], glow: false,
+      bloom: 'petals', bloomColors: ['#ffc4d6', '#ffe3ec', '#ffffff', '#f7a8c4'],
+      greet: { land: 'Rabbits scamper through the blossoms', fish: 'Koi ripple beneath you' }
+    },
+    { // Nordic Fjord
+      land: 'deer', landColor: '#b9c0c4', landSpot: '#f4f7f8', antlers: true,
+      fishColors: ['#e69a8d', '#d8e3e8'], glow: false,
+      bloom: 'glints', bloomColors: ['#ffffff', '#cfeaff', '#e8f6ff'],
+      greet: { land: 'A reindeer lifts its head', fish: 'Silver salmon flash by' }
+    },
+    { // Starlight Dusk
+      land: 'rabbit', landColor: '#c9c3e0', landSpot: '#ffffff', antlers: false,
+      fishColors: ['#6fd0e8', '#c4f4ff'], glow: true,
+      bloom: 'lanterns', bloomColors: ['#ffd27a', '#ffb35c', '#ffe6a8'],
+      greet: { land: 'Moon rabbits startle', fish: 'Glowfish scatter' }
+    }
+  ];
+
+  const RAINBOW_COLORS = ['#ff8f8f', '#ffb88a', '#ffe08a', '#a8e6a1', '#8fd3f4', '#a9b4f5', '#d7a8ee'];
+
+  function clampNum(v, lo, hi) {
+    return Math.max(lo, Math.min(hi, v));
+  }
+
+  // --- Gentle whisper messages ---
+  const whisperEl = document.getElementById('whisper');
+  let whisperTimer = null;
+  let lastWhisperAt = -10000;
+  function whisper(text) {
+    if (!whisperEl) return;
+    const now = performance.now();
+    if (now - lastWhisperAt < 2600) return;
+    lastWhisperAt = now;
+    whisperEl.textContent = text;
+    whisperEl.classList.add('show');
+    clearTimeout(whisperTimer);
+    whisperTimer = setTimeout(() => whisperEl.classList.remove('show'), 2300);
+  }
+
+  // --- Bloom (persistent per environment) ---
+  const bloomTitle = document.getElementById('bloom-title');
+  const bloomPct = document.getElementById('bloom-pct');
+  const bloomFill = document.getElementById('bloom-fill');
+  const bloomNote = document.getElementById('bloom-note');
+  const bloomMiniFill = document.getElementById('bloom-mini-fill');
+  const bloomMiniText = document.getElementById('bloom-mini-text');
+
+  function loadBloom() {
+    try {
+      const a = JSON.parse(localStorage.getItem('paper_drift_bloom'));
+      if (Array.isArray(a) && a.length === 4) {
+        return a.map((v) => clampNum(Number(v) || 0, 0, 1));
+      }
+    } catch (e) { /* storage unavailable */ }
+    return [0, 0, 0, 0];
+  }
+
+  function saveBloom() {
+    try {
+      localStorage.setItem('paper_drift_bloom', JSON.stringify(bloomLevels));
+    } catch (e) { /* storage unavailable */ }
+  }
+
+  function bloomEarned() {
+    return plane.thermalsCaught * 0.01 + sightings * 0.01 + plane.distanceFlown * 0.00002 + flightBonusBloom;
+  }
+
+  function bankBloom() {
+    const earned = bloomEarned();
+    const delta = earned - flightBloomBanked;
+    if (delta > 0) {
+      bloomLevels[flightBiomeIdx] = Math.min(1, (bloomLevels[flightBiomeIdx] || 0) + delta);
+      flightBloomBanked = earned;
+      saveBloom();
+    }
+  }
+
+  function updateTitleBloom() {
+    if (!bloomMiniText) return;
+    const pct = Math.round((bloomLevels[currentBiomeIndex] || 0) * 100);
+    bloomMiniText.textContent = pct >= 100
+      ? `${BIOMES[currentBiomeIndex].name} · in full bloom`
+      : `${BIOMES[currentBiomeIndex].name} · ${pct}% in bloom`;
+    if (bloomMiniFill) bloomMiniFill.style.width = pct + '%';
+  }
+
+  function showEndBloom(wasObstacle) {
+    if (!bloomFill) return;
+    const name = BIOMES[flightBiomeIdx].name;
+    const startPct = Math.round(flightStartBloom * 100);
+    const endPct = Math.round((bloomLevels[flightBiomeIdx] || 0) * 100);
+    const gain = endPct - startPct;
+    bloomTitle.textContent = endPct >= 100 ? `${name} is in full bloom` : `${name} in bloom`;
+    bloomPct.textContent = endPct + '%';
+
+    const bits = [];
+    bits.push(gain > 0 ? `+${gain}% this flight` : 'Keep gliding to help it bloom');
+    if (sightings > 0) bits.push(`${sightings} ${sightings === 1 ? 'friend' : 'friends'} greeted`);
+    if (rainbowFound) bits.push('rainbow found');
+    bloomNote.textContent = bits.join(' · ');
+
+    bloomFill.style.transition = 'none';
+    bloomFill.style.width = startPct + '%';
+    void bloomFill.offsetWidth;
+    setTimeout(() => {
+      bloomFill.style.transition = '';
+      bloomFill.style.width = endPct + '%';
+    }, wasObstacle ? 1900 : 450);
+    updateTitleBloom();
+  }
+
+  window.addEventListener('pagehide', () => {
+    if (gameState === STATE.FLYING) bankBloom();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && gameState === STATE.FLYING) bankBloom();
+  });
+
+  // --- Bloom spots on the ground ---
+  function drawBloomSpot(d, time) {
+    const fa = FAUNA[currentBiomeIndex];
+    const cols = fa.bloomColors;
+    if (fa.bloom === 'lanterns') {
+      const pulse = 0.75 + Math.sin(time * 1.7 + d.seed) * 0.25;
+      ctx.fillStyle = `rgba(255, 190, 110, ${(0.14 * pulse).toFixed(3)})`;
+      ctx.beginPath(); ctx.arc(d.x, d.y, d.radius + 8, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = `rgba(255, 205, 130, ${(0.3 * pulse).toFixed(3)})`;
+      ctx.beginPath(); ctx.arc(d.x, d.y, d.radius * 0.55 + 3, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = cols[Math.floor(d.seed) % cols.length];
+      ctx.beginPath(); ctx.arc(d.x, d.y, 3.2, 0, Math.PI * 2); ctx.fill();
+    } else if (fa.bloom === 'glints') {
+      const tw = Math.max(0, Math.sin(time * 1.9 + d.seed * 3));
+      const r = 3 + d.radius * 0.3 * tw;
+      ctx.strokeStyle = `rgba(235, 248, 255, ${(0.25 + tw * 0.65).toFixed(3)})`;
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(d.x - r, d.y); ctx.lineTo(d.x + r, d.y);
+      ctx.moveTo(d.x, d.y - r); ctx.lineTo(d.x, d.y + r);
+      ctx.stroke();
+    } else {
+      const n = fa.bloom === 'petals' ? 7 : 6;
+      for (let k = 0; k < n; k++) {
+        const ang = d.seed + k * 1.9;
+        const dist = (k / n) * d.radius;
+        const sway = Math.sin(time * 1.4 + d.seed + k) * 0.8;
+        ctx.fillStyle = cols[k % cols.length];
+        ctx.beginPath();
+        if (fa.bloom === 'petals') {
+          ctx.ellipse(d.x + Math.cos(ang) * dist + sway, d.y + Math.sin(ang) * dist, 3, 1.8, ang, 0, Math.PI * 2);
+        } else {
+          ctx.arc(d.x + Math.cos(ang) * dist + sway, d.y + Math.sin(ang) * dist, 2.4, 0, Math.PI * 2);
+        }
+        ctx.fill();
+      }
+    }
+  }
+
+  // --- Spawning creatures, bloom spots and rainbows as the world generates ---
+  function spawnLife(bandY) {
+    const fa = FAUNA[currentBiomeIndex];
+
+    // Land creatures on the meadows
+    if (Math.random() < 0.3) {
+      const gx = plane.x + (Math.random() - 0.5) * 1500;
+      const gy = bandY - Math.random() * 120;
+      if (Math.abs(gx - riverCenterAt(gy)) > riverWidthAt(gy) + 50) {
+        const grp = { counted: false };
+        const n = fa.land === 'deer' ? 1 + Math.floor(Math.random() * 3) : 2 + Math.floor(Math.random() * 3);
+        for (let k = 0; k < n; k++) {
+          creatures.push({
+            kind: fa.land,
+            x: gx + (Math.random() - 0.5) * 54,
+            y: gy + (Math.random() - 0.5) * 44,
+            vx: 0, vy: 0, h: 0,
+            ang: Math.random() * Math.PI * 2,
+            state: 'idle', t: 0, seed: Math.random() * 10, grp
+          });
+        }
+      }
+    }
+
+    // Fish in the river
+    if (Math.random() < 0.42) {
+      const gy = bandY - Math.random() * 120;
+      const rc = riverCenterAt(gy);
+      const rw = riverWidthAt(gy);
+      const grp = { counted: false };
+      const n = 1 + Math.floor(Math.random() * 3);
+      for (let k = 0; k < n; k++) {
+        const off = (Math.random() - 0.5) * rw * 1.1;
+        creatures.push({
+          kind: 'fish', off,
+          x: rc + off, y: gy + (Math.random() - 0.5) * 34,
+          vx: 0, vy: 0, h: 0, ang: Math.PI / 2,
+          state: 'idle', t: 0, seed: Math.random() * 10, grp,
+          colorIdx: Math.random() < 0.5 ? 0 : 1
+        });
+      }
+    }
+
+    // Bloom spots: the more an environment has bloomed, the more it sparkles
+    const bloom = bloomLevels[currentBiomeIndex] || 0;
+    if (bloom > 0) {
+      const want = bloom * 5;
+      const count = Math.floor(want) + (Math.random() < want - Math.floor(want) ? 1 : 0);
+      for (let k = 0; k < count; k++) {
+        const gx = plane.x + (Math.random() - 0.5) * 2000;
+        const gy = bandY - Math.random() * 140;
+        if (Math.abs(gx - riverCenterAt(gy)) > riverWidthAt(gy) + 30) {
+          groundDecor.push({
+            type: 'bloom', x: gx, y: gy,
+            radius: 8 + Math.random() * 14,
+            seed: Math.random() * 100
+          });
+        }
+      }
+    }
+
+    // A rare rainbow arching over the Golden Valley
+    if (currentBiomeIndex === 0 && bandY < -1500 && lastRainbowY - bandY > 5000 && Math.random() < 0.007) {
+      lastRainbowY = bandY;
+      rainbows.push({
+        x: plane.x + (Math.random() - 0.5) * 240,
+        y: bandY, r: 230 + Math.random() * 60,
+        phase: Math.random() * 6, glow: 0, passed: false
+      });
+    }
+  }
+
+  // --- Tree sway: trees lean away as you pass ---
+  function updateTreeSway(ob, dt) {
+    if (ob.swayOff === undefined) { ob.swayOff = 0; ob.swayVel = 0; }
+    const dx = ob.x - plane.x;
+    const dy = ob.y - plane.y;
+    const d = Math.hypot(dx, dy);
+    let kick = 0;
+    if (gameState === STATE.FLYING && d < 190) {
+      kick = Math.sign(dx || 1) * (1 - d / 190) * (plane.speed / 240) * 150;
+    }
+    ob.swayVel += (-22 * ob.swayOff - 2.4 * ob.swayVel + kick) * dt;
+    ob.swayOff = clampNum(ob.swayOff + ob.swayVel * dt, -11, 11);
+
+    // Shake a leaf loose when a tree is stirred
+    if (Math.abs(ob.swayVel) > 28 && Math.random() < 2.2 * dt) {
+      addWakePetal(ob.x + (Math.random() - 0.5) * ob.radius, ob.y + (Math.random() - 0.5) * ob.radius, null, 2.6);
+    }
+  }
+
+  function addWakePetal(x, y, color, ttl) {
+    if (floatingPetals.length > 420) return;
+    floatingPetals.push({
+      x, y, z: plane.z,
+      size: 2.2 + Math.random() * 1.8,
+      vx: (Math.random() - 0.5) * 40,
+      vy: -10 - Math.random() * 28,
+      phase: Math.random() * Math.PI * 2,
+      age: 0, ttl: ttl || 2.4 + Math.random() * 1.2,
+      color: color || null
+    });
+  }
+
+  // --- Main living-world update ---
+  function updateLife(dt, time, interactive) {
+    const biome = BIOMES[currentBiomeIndex];
+    const fa = FAUNA[currentBiomeIndex];
+
+    // Fade wake ripples
+    for (let i = wakeRipples.length - 1; i >= 0; i--) {
+      wakeRipples[i].age += dt;
+      if (wakeRipples[i].age >= wakeRipples[i].maxAge) wakeRipples.splice(i, 1);
+    }
+
+    // Rainbow glow decay
+    for (let i = 0; i < rainbows.length; i++) {
+      rainbows[i].glow = Math.max(0, rainbows[i].glow - dt * 0.3);
+    }
+
+    if (interactive) {
+      const lowFactor = clampNum((34 - plane.z) / 34, 0, 1);
+      const rc = riverCenterAt(plane.y);
+      const rw = riverWidthAt(plane.y);
+      const overWater = Math.abs(plane.x - rc) < rw;
+      const sinH = Math.sin(plane.heading);
+      const cosH = Math.cos(plane.heading);
+
+      if (lowFactor > 0 && !overWater) {
+        // Petals swirl up in the wake when gliding low over the meadows
+        wakeTimer -= dt;
+        if (wakeTimer <= 0) {
+          wakeTimer = 0.05 + (1 - lowFactor) * 0.16;
+          const side = Math.random() < 0.5 ? -1 : 1;
+          const px = plane.x + cosH * side * (6 + Math.random() * 16) - sinH * 12;
+          const py = plane.y + sinH * side * 8 + cosH * 12;
+          addWakePetal(px, py, null);
+          if (lowFactor > 0.6) addWakePetal(px + side * 6, py + 6, null);
+        }
+
+        // Stir the wildflowers directly beneath the wings
+        for (let i = 0; i < groundDecor.length; i++) {
+          const gd = groundDecor[i];
+          if ((gd.type === 'flowers' || gd.type === 'bloom') && (gd.stirT === undefined || time - gd.stirT > 6)) {
+            if (Math.abs(gd.y - plane.y) < gd.radius + 16 && Math.abs(gd.x - plane.x) < gd.radius + 16) {
+              gd.stirT = time;
+              const cols = fa.bloomColors;
+              for (let k = 0; k < 4; k++) {
+                addWakePetal(gd.x + (Math.random() - 0.5) * gd.radius, gd.y + (Math.random() - 0.5) * gd.radius,
+                  k % 2 ? cols[k % cols.length] : null, 3);
+              }
+            }
+          }
+        }
+      }
+
+      if (lowFactor > 0 && overWater && plane.z < 26) {
+        // Skimming the river leaves soft rings behind each wingtip
+        wakeDist += plane.speed * dt;
+        if (wakeDist > 24) {
+          wakeDist = 0;
+          for (let side = -1; side <= 1; side += 2) {
+            wakeRipples.push({
+              x: plane.x + cosH * side * 13 - sinH * 10,
+              y: plane.y + sinH * side * 8 + cosH * 10,
+              age: 0, maxAge: 1.5 + Math.random() * 0.4, maxR: 34 + Math.random() * 12
+            });
+          }
+          if (wakeRipples.length > 90) wakeRipples.splice(0, wakeRipples.length - 90);
+        }
+        skimSoundTimer -= dt;
+        if (skimSoundTimer <= 0) {
+          skimSoundTimer = 1.3;
+          audio.playWaterSkimSound();
+        }
+      } else {
+        wakeDist = 0;
+      }
+    }
+
+    updateCreatures(dt, time, interactive);
+    updateRainbows(interactive);
+    updateEscort(dt, time, interactive);
+
+    if (interactive) {
+      bankTimer += dt;
+      if (bankTimer > 8) {
+        bankTimer = 0;
+        bankBloom();
+      }
+    }
+  }
+
+  function greetCreature(c) {
+    if (c.grp.counted) return;
+    c.grp.counted = true;
+    sightings++;
+    const fa = FAUNA[currentBiomeIndex];
+    whisper(c.kind === 'fish' ? fa.greet.fish : fa.greet.land);
+    audio.playCreatureSound(c.kind);
+  }
+
+  function updateCreatures(dt, time, interactive) {
+    for (let i = 0; i < creatures.length; i++) {
+      const c = creatures[i];
+      if (Math.abs(c.y - camera.y) > 1500) continue;
+
+      const dxp = c.x - plane.x;
+      const dyp = c.y - plane.y;
+      const dp = Math.hypot(dxp, dyp) || 1;
+
+      if (c.kind === 'fish') {
+        if (c.state === 'idle') {
+          const rc = riverCenterAt(c.y);
+          const rw = riverWidthAt(c.y);
+          c.off = clampNum(c.off + Math.sin(time * 0.7 + c.seed) * 6 * dt, -rw * 0.62, rw * 0.62);
+          const tx = rc + c.off;
+          const lateral = (tx - c.x) * 2.0;
+          c.x += lateral * dt;
+          c.y += 9 * dt;
+          const targetAng = Math.atan2(9, lateral);
+          c.ang += Math.atan2(Math.sin(targetAng - c.ang), Math.cos(targetAng - c.ang)) * Math.min(1, 4 * dt);
+          if (interactive && gameState === STATE.FLYING && plane.z < 40 && dp < 95) {
+            c.state = 'startled';
+            c.t = 0;
+            c.vx = dxp / dp;
+            c.vy = dyp / dp;
+            c.ang = Math.atan2(c.vy, c.vx);
+            wakeRipples.push({ x: c.x, y: c.y, age: 0, maxAge: 1.6, maxR: 40 });
+            greetCreature(c);
+          }
+        } else {
+          c.t += dt;
+          const sp = 150 * Math.pow(Math.max(0, 1 - c.t / 0.9), 2);
+          c.x += c.vx * sp * dt;
+          c.y += c.vy * sp * dt;
+          if (c.t > 0.9) {
+            c.state = 'idle';
+            c.off = c.x - riverCenterAt(c.y);
+          }
+        }
+      } else {
+        if (c.state === 'idle') {
+          if (interactive && gameState === STATE.FLYING && dp < 150) {
+            c.state = 'startled';
+            c.t = 0;
+            c.vx = dxp / dp;
+            c.vy = dyp / dp;
+            c.ang = Math.atan2(c.vy, c.vx);
+            greetCreature(c);
+          }
+        } else if (c.state === 'startled') {
+          c.t += dt;
+          let sp;
+          if (c.kind === 'deer') {
+            sp = 150 * Math.max(0, 1 - c.t / 2.0);
+            c.h = sp > 8 ? Math.abs(Math.sin(c.t * 7)) * 7 : 0;
+          } else {
+            const cycle = Math.max(0, Math.sin(c.t * 10));
+            sp = 110 * Math.max(0, 1 - c.t / 1.6) * cycle * 1.6;
+            c.h = cycle * 5 * Math.max(0, 1 - c.t / 1.6);
+          }
+          c.x += c.vx * sp * dt;
+          c.y += c.vy * sp * dt;
+          if (c.t > 2.2) {
+            c.state = 'calm';
+            c.h = 0;
+          }
+        }
+      }
+    }
+  }
+
+  function drawWakeRipples(biome) {
+    if (wakeRipples.length === 0) return;
+    ctx.strokeStyle = biome.riverFoam;
+    ctx.lineWidth = 1.8;
+    for (let i = 0; i < wakeRipples.length; i++) {
+      const w = wakeRipples[i];
+      const t = w.age / w.maxAge;
+      ctx.globalAlpha = Math.pow(1 - t, 1.4);
+      ctx.beginPath();
+      ctx.ellipse(w.x, w.y, 4 + w.maxR * t, (4 + w.maxR * t) * 0.78, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawCreatures(biome, time) {
+    if (creatures.length === 0) return;
+    const fa = FAUNA[currentBiomeIndex];
+    const halfY = (height / camera.zoom) * 0.8 + 60;
+    const halfX = (width / camera.zoom) * 0.7 + 60;
+
+    for (let i = 0; i < creatures.length; i++) {
+      const c = creatures[i];
+      if (Math.abs(c.y - camera.y) > halfY || Math.abs(c.x - camera.x) > halfX) continue;
+      const h = c.h || 0;
+
+      ctx.save();
+      if (c.kind !== 'fish') {
+        // Soft ground shadow
+        ctx.fillStyle = 'rgba(18, 30, 28, 0.2)';
+        ctx.beginPath();
+        ctx.ellipse(c.x - 2, c.y + 3, c.kind === 'deer' ? 11 : 6, c.kind === 'deer' ? 5 : 3.6, c.ang, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (fa.glow) {
+        ctx.fillStyle = 'rgba(190, 230, 255, 0.13)';
+        ctx.beginPath(); ctx.arc(c.x, c.y - h, c.kind === 'deer' ? 22 : 15, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.translate(c.x, c.y - h);
+      ctx.rotate(c.ang);
+
+      if (c.kind === 'deer') {
+        ctx.fillStyle = fa.landColor;
+        ctx.beginPath(); ctx.ellipse(0, 0, 11, 5.2, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(11.5, 0, 4.4, 3.2, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(9.2, -2.9, 1.8, 1, -0.6, 0, Math.PI * 2);
+        ctx.ellipse(9.2, 2.9, 1.8, 1, 0.6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = fa.landSpot;
+        ctx.globalAlpha = 0.6;
+        for (let k = 0; k < 3; k++) {
+          ctx.beginPath(); ctx.arc(-4 + k * 4, (k % 2 ? 1.6 : -1.6), 1.1, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+        ctx.beginPath(); ctx.arc(-11.2, 0, 2, 0, Math.PI * 2); ctx.fill();
+        if (fa.antlers) {
+          ctx.strokeStyle = fa.landSpot;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(10.2, -2); ctx.lineTo(7.5, -6.5); ctx.moveTo(8.6, -4.6); ctx.lineTo(10.8, -7.4);
+          ctx.moveTo(10.2, 2); ctx.lineTo(7.5, 6.5); ctx.moveTo(8.6, 4.6); ctx.lineTo(10.8, 7.4);
+          ctx.stroke();
+        }
+      } else if (c.kind === 'rabbit') {
+        ctx.fillStyle = fa.landColor;
+        ctx.beginPath(); ctx.ellipse(0, 0, 6, 4.2, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(6.2, 0, 3.2, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(4.8, -2, 3.6, 1.1, -0.35, 0, Math.PI * 2);
+        ctx.ellipse(4.8, 2, 3.6, 1.1, 0.35, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = fa.landSpot;
+        ctx.beginPath(); ctx.arc(-6.2, 0, 2, 0, Math.PI * 2); ctx.fill();
+      } else {
+        // Fish
+        const col = fa.fishColors[c.colorIdx || 0];
+        const wag = Math.sin(time * (c.state === 'startled' ? 16 : 6) + c.seed) * 0.5;
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = col;
+        ctx.beginPath(); ctx.ellipse(0, 0, 8, 3.2, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(-7, 0);
+        ctx.lineTo(-13, -3.4 + wag * 3);
+        ctx.lineTo(-13, 3.4 + wag * 3);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = fa.fishColors[1];
+        ctx.globalAlpha = 0.75;
+        ctx.beginPath(); ctx.ellipse(1.5, 0, 3.2, 1.8, 0, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+    }
+  }
+
+  // --- Rainbows ---
+  function updateRainbows(interactive) {
+    if (!interactive) return;
+    for (let i = 0; i < rainbows.length; i++) {
+      const r = rainbows[i];
+      if (r.passed) continue;
+      const dx = plane.x - r.x;
+      const dy = plane.y - r.y;
+      const dist = Math.hypot(dx, dy);
+      const bw = 9;
+      const ringMid = r.r - 3 * bw;
+      if (dy < -0.1 * dist && Math.abs(dist - ringMid) < 3.5 * bw + 12) {
+        r.passed = true;
+        r.glow = 1;
+        sightings++;
+        rainbowFound = true;
+        flightBonusBloom += 0.02;
+        plane.z = Math.min(68, plane.z + 8);
+        whisper('You flew through a rainbow');
+        audio.playRainbowSound();
+        for (let k = 0; k < 21; k++) {
+          const ang = (k / 21) * Math.PI * 2;
+          addWakePetal(plane.x + Math.cos(ang) * 14, plane.y + Math.sin(ang) * 14, RAINBOW_COLORS[k % 7], 3.6);
+          const last = floatingPetals[floatingPetals.length - 1];
+          if (last) {
+            last.vx = Math.cos(ang) * (40 + Math.random() * 40);
+            last.vy = Math.sin(ang) * (40 + Math.random() * 40) - 30;
+            last.size = 3 + Math.random() * 2;
+          }
+        }
+      }
+    }
+  }
+
+  function drawRainbows(time) {
+    if (rainbows.length === 0) return;
+    const bw = 9;
+    const lift = 90;
+    for (let i = 0; i < rainbows.length; i++) {
+      const r = rainbows[i];
+      if (Math.abs(r.y - camera.y) > (height / camera.zoom) + 320) continue;
+      const cx = r.x + (r.x - camera.x) * 0.0022 * lift;
+      const cy = r.y + ((r.y - camera.y) * 0.0022 - 0.35) * lift;
+      const alpha = Math.min(0.85, 0.3 + 0.05 * Math.sin(time * 0.8 + r.phase) + r.glow * 0.4);
+
+      ctx.save();
+      ctx.lineWidth = bw + 0.5;
+      ctx.globalAlpha = alpha;
+      for (let k = 0; k < 7; k++) {
+        ctx.strokeStyle = RAINBOW_COLORS[k];
+        ctx.beginPath();
+        ctx.arc(cx, cy, r.r - k * bw, Math.PI * 1.04, Math.PI * 1.96);
+        ctx.stroke();
+      }
+      // Soft mist where the rainbow meets the ground
+      for (let side = -1; side <= 1; side += 2) {
+        const mx = cx + side * (r.r - 3 * bw);
+        const mg = ctx.createRadialGradient(mx, cy, 4, mx, cy, 52);
+        mg.addColorStop(0, `rgba(255, 255, 255, ${(0.4 + r.glow * 0.3).toFixed(3)})`);
+        mg.addColorStop(1, 'rgba(255, 255, 255, 0)');
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = mg;
+        ctx.beginPath(); ctx.arc(mx, cy, 52, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+    }
+  }
+
+  // --- Friendly escort birds (Golden Valley) ---
+  function startEscort() {
+    const side = Math.random() < 0.5 ? -1 : 1;
+    const count = 5;
+    const birds = [];
+    for (let k = 0; k < count; k++) {
+      const rank = Math.ceil(k / 2);
+      birds.push({
+        ox: side * 95 + (k % 2 ? 1 : -1) * rank * 16 * (k === 0 ? 0 : 1),
+        oy: -30 + rank * 15,
+        x: plane.x + side * 560 + k * 10,
+        y: plane.y - 200 + k * 12,
+        phase: Math.random() * 6
+      });
+    }
+    escort = { t: 0, dur: 14 + Math.random() * 5, side, birds, greeted: false };
+  }
+
+  function updateEscort(dt, time, interactive) {
+    if (!escort) {
+      if (interactive && currentBiomeIndex === 0 && plane.distanceFlown > 150) {
+        escortTimer -= dt;
+        if (escortTimer <= 0) startEscort();
+      }
+      return;
+    }
+    escort.t += dt;
+    // Peel away when the flight ends or the time is up
+    if (!interactive && escort.t < escort.dur - 2.5) escort.t = escort.dur - 2.5;
+
+    const leaving = escort.t > escort.dur - 2.5;
+    for (let k = 0; k < escort.birds.length; k++) {
+      const b = escort.birds[k];
+      b.phase += dt * 9;
+      const tx = leaving ? plane.x + escort.side * 640 : plane.x + b.ox + Math.sin(time * 0.9 + k) * 6;
+      const ty = leaving ? plane.y - 320 : plane.y + b.oy + Math.cos(time * 1.1 + k) * 5;
+      const ease = Math.min(1, (leaving ? 0.9 : 2.0) * dt);
+      b.x += (tx - b.x) * ease;
+      b.y += (ty - b.y) * ease;
+    }
+
+    if (!escort.greeted && escort.t > 2.5 && interactive) {
+      escort.greeted = true;
+      sightings++;
+      whisper('Friendly birds join you');
+      audio.playCreatureSound('land');
+    }
+    if (escort.t > escort.dur) {
+      escort = null;
+      escortTimer = 25 + Math.random() * 25;
+    }
+  }
+
+  function drawEscortBirds(time) {
+    if (!escort) return;
+    ctx.strokeStyle = 'rgba(35, 50, 52, 0.7)';
+    ctx.lineWidth = 1.8;
+    ctx.lineCap = 'round';
+    for (let k = 0; k < escort.birds.length; k++) {
+      const b = escort.birds[k];
+      const wing = Math.sin(b.phase) * 5;
+      // faint shadow on the valley floor
+      ctx.fillStyle = 'rgba(18, 30, 28, 0.12)';
+      ctx.beginPath(); ctx.ellipse(b.x + 10, b.y + 24, 7, 3, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(b.x - 8, b.y + 4 + wing * 0.5);
+      ctx.quadraticCurveTo(b.x - 3, b.y - 3, b.x, b.y);
+      ctx.quadraticCurveTo(b.x + 3, b.y - 3, b.x + 8, b.y + 4 + wing * 0.5);
+      ctx.stroke();
+    }
+  }
+
+  updateTitleBloom();
 
   // Main Animation Loop
   let lastTime = performance.now();
