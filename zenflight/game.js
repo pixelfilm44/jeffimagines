@@ -4,7 +4,10 @@
 
 (() => {
   const canvas = document.getElementById('game-canvas');
-  const ctx = canvas.getContext('2d');
+  const mainCtx = canvas.getContext('2d');
+  let ctx = mainCtx;   // draw target; temporarily points at the ground layer when it is motion-blurred
+  const groundCanvas = document.createElement('canvas');
+  const groundCtx = groundCanvas.getContext('2d');
 
   // UI Elements
   const hudTop = document.getElementById('hud-top');
@@ -1693,6 +1696,19 @@
   function render(time) {
     const biome = BIOMES[currentBiomeIndex];
 
+    // Above the treeline the ground layer (terrain, trees, rocks, shadows) gets a gentle motion blur
+    // along the flight direction, so obstacles up in the air with you stay crisp and stand out.
+    const blurAmt = treeHaze;
+    const blurGround = blurAmt > 0.03;
+    if (blurGround) {
+      if (groundCanvas.width !== canvas.width || groundCanvas.height !== canvas.height) {
+        groundCanvas.width = canvas.width;
+        groundCanvas.height = canvas.height;
+      }
+      ctx = groundCtx;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+    }
+
     ctx.save();
     ctx.scale(dpr, dpr);
 
@@ -1731,11 +1747,36 @@
     // 8. 3D-Projected Obstacles (Sorted back-to-front by depth/height for natural overlap)
     drawSkyBalloonShadows();
     drawObstacles3D(biome, time);
-    drawSkyBalloons(time, 'below');
     drawCloudShadows(time);
     if (treeHaze >= 0.5) drawAirplaneShadow();
     drawHiddenCranes(time);
 
+    if (blurGround) {
+      // Composite the ground layer onto the screen as an average of samples smeared along the motion
+      ctx.restore();
+      ctx.restore();
+      ctx = mainCtx;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = biome.groundBase;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      const fx = Math.sin(plane.heading), fy = -Math.cos(plane.heading);
+      const len = (2 + (plane.speed / 240) * 5) * blurAmt * dpr;
+      const samples = 5;
+      for (let i = 0; i < samples; i++) {
+        const t = i / (samples - 1) - 0.5;
+        ctx.globalAlpha = 1 / (i + 1);
+        ctx.drawImage(groundCanvas, fx * len * t, fy * len * t);
+      }
+      ctx.globalAlpha = 1;
+      ctx.save();
+      ctx.scale(dpr, dpr);
+      ctx.save();
+      ctx.translate(width * 0.5, height * anchorYRatio);
+      ctx.scale(camera.zoom, camera.zoom);
+      ctx.translate(-camera.x, -camera.y);
+    }
+
+    drawSkyBalloons(time, 'below');
     drawRainbows(time);
 
     // 9. Wingtip Condensation Trails & Breeze Wind Ribbons
