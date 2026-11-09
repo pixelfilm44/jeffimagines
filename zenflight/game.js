@@ -825,7 +825,7 @@
       }
 
       // 3. Swirling Wind Circles (Collecting a circle releases an upward gust of air that lifts the plane & prolongs flight)
-      if (bandY < -200 && Math.random() < 0.21) {
+      if (bandY < -200 && Math.random() < 0.32) {
         const tx = plane.x + (Math.random() - 0.5) * 820;
         const ty = bandY - Math.random() * 90;
         // Ensure circle isn't inside an obstacle
@@ -1725,9 +1725,6 @@
     // 5. Low-Flying Flocks of Birds (below the airplane)
     drawBirdFlocks(time);
 
-    // 6. Swirling Updraft Wind Circles
-    drawThermals(biome, time);
-
     // 7. Cast Shadow of the Paper Airplane on the Valley Floor
     if (treeHaze < 0.5) drawAirplaneShadow();
 
@@ -1773,6 +1770,16 @@
     }
 
     drawSkyOverlay(time, anchorYRatio);
+
+    // Swirling updraft wind rings: drawn after the lighting & weather so they always glow yellow
+    ctx.save();
+    ctx.translate(width * 0.5, height * anchorYRatio);
+    ctx.scale(camera.zoom, camera.zoom);
+    ctx.translate(-camera.x, -camera.y);
+    drawThermals(biome, time);
+    ctx.restore();
+
+    drawLensDrops();
 
     ctx.restore();
   }
@@ -4183,6 +4190,9 @@
     sky.clouds = sky.rain = sky.snow = sky.fog = 0;
     sky.drops = [];
     sky.puffs = [];
+    sky.rainDrops = [];
+    sky.splashes = [];
+    sky.lens = [];
     sky.nextPhaseLine = PHASE_LINES.findIndex((l) => l.p > sky.clock);
     if (sky.nextPhaseLine < 0) sky.nextPhaseLine = PHASE_LINES.length;
   }
@@ -4239,7 +4249,8 @@
     sky.daylight = 1 - sky.night * 0.9;
 
     // Rain drops / snowflakes in screen space (they fall toward the ground, i.e. toward screen centre)
-    const want = Math.round(sky.rain * 95 + sky.snow * 110);
+    updateRain(dt);
+    const want = Math.round(sky.snow * 110);
     while (sky.drops.length < want) {
       sky.drops.push({ x: Math.random() * width, y: Math.random() * height, life: Math.random(), speed: 0.8 + Math.random() * 0.6, seed: Math.random() * 10 });
     }
@@ -4361,22 +4372,10 @@
     }
 
     // Rain streaks / snowflakes heading down toward the ground (screen centre is straight down)
+    drawRain(anchorYRatio);
     if (sky.drops.length) {
       const vx = width * 0.5, vy = height * anchorYRatio;
-      if (sky.rain >= sky.snow) {
-        // Short streaks, slanted by a steady wind, that shrink as they fall toward the ground
-        ctx.strokeStyle = sky.night > 0.5 ? 'rgba(200, 215, 240, 0.3)' : 'rgba(240, 248, 255, 0.45)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        for (const d of sky.drops) {
-          const k = d.life * 0.3;
-          const x = d.x + (vx - d.x) * k, y = d.y + (vy - d.y) * k;
-          const len = 9 * (1 - d.life * 0.7);
-          ctx.moveTo(x, y);
-          ctx.lineTo(x - len * 0.35, y - len);
-        }
-        ctx.stroke();
-      } else {
+      {
         ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
         for (const d of sky.drops) {
           const k = d.life * 0.45;
@@ -4398,6 +4397,145 @@
       g.addColorStop(1, `rgba(${fogCol}, ${(0.7 * sky.fog).toFixed(3)})`);
       ctx.fillStyle = g;
       ctx.fillRect(0, 0, width, height);
+    }
+  }
+
+
+  // ===================================================================
+  // RAIN — layered streaks, ground splashes, a grey veil and drops on the drone's lens
+  // ===================================================================
+  const RAIN_WIND = { x: -0.32, y: 1 };      // falling slightly down-left in screen space
+  sky.rainDrops = [];
+  sky.splashes = [];
+  sky.lens = [];
+
+  function updateRain(dt) {
+    const r = sky.rain;
+    // Streaks in three depth layers: near (long, faint, fast), mid, far (short, crisp)
+    const want = Math.round(r * 170);
+    while (sky.rainDrops.length < want) {
+      const depth = Math.random();
+      sky.rainDrops.push({
+        x: Math.random() * (width + 200) - 100, y: Math.random() * height - 60,
+        depth, len: 8 + depth * 26, speed: 700 + depth * 900, w: 0.6 + depth * 1.1
+      });
+    }
+    if (sky.rainDrops.length > want) sky.rainDrops.length = want;
+    const n = Math.hypot(RAIN_WIND.x, RAIN_WIND.y);
+    for (const d of sky.rainDrops) {
+      d.x += (RAIN_WIND.x / n) * d.speed * dt;
+      d.y += (RAIN_WIND.y / n) * d.speed * dt;
+      if (d.y - d.len > height || d.x < -120) {
+        d.x = Math.random() * (width + 260) - 60;
+        d.y = -d.len - Math.random() * 80;
+      }
+    }
+    // Splashes on the ground, anchored in the world so they stay put as you fly past
+    if (r > 0.05) {
+      let spawn = r * 70 * dt;
+      while (spawn > 0 && sky.splashes.length < 80) {
+        if (spawn < 1 && Math.random() > spawn) break;
+        spawn -= 1;
+        sky.splashes.push({
+          x: camera.x + (Math.random() - 0.5) * width / camera.zoom,
+          y: camera.y + (Math.random() - 0.6) * height / camera.zoom,
+          age: 0, max: 0.28 + Math.random() * 0.2, s: 0.7 + Math.random() * 0.6
+        });
+      }
+    }
+    for (let i = sky.splashes.length - 1; i >= 0; i--) {
+      sky.splashes[i].age += dt;
+      if (sky.splashes[i].age >= sky.splashes[i].max) sky.splashes.splice(i, 1);
+    }
+    // Water drops that land on the drone camera's lens, bead up, slide and dry off
+    if (r > 0.4 && sky.lens.length < 7 && Math.random() < r * 0.9 * dt) {
+      sky.lens.push({ x: Math.random() * width, y: Math.random() * height * 0.85, r: 7 + Math.random() * 13, age: 0, max: 2.5 + Math.random() * 2.5, vy: 0 });
+    }
+    for (let i = sky.lens.length - 1; i >= 0; i--) {
+      const L = sky.lens[i];
+      L.age += dt;
+      if (L.age > 0.8 && L.r > 12) { L.vy = Math.min(40, L.vy + 30 * dt); L.y += L.vy * dt; }
+      if (L.age >= L.max) sky.lens.splice(i, 1);
+    }
+  }
+
+  function drawRain(anchorYRatio) {
+    const r = sky.rain;
+    if (r < 0.02) return;
+    const night = sky.night > 0.5;
+
+    // Grey rain veil, heavier toward the top of the view (further from the drone's feet)
+    const veil = ctx.createLinearGradient(0, 0, 0, height);
+    veil.addColorStop(0, `rgba(${night ? '70, 85, 110' : '190, 200, 210'}, ${(0.16 * r).toFixed(3)})`);
+    veil.addColorStop(1, `rgba(${night ? '70, 85, 110' : '190, 200, 210'}, ${(0.05 * r).toFixed(3)})`);
+    ctx.fillStyle = veil;
+    ctx.fillRect(0, 0, width, height);
+
+    // Ground splashes: tiny crowns that flick out and vanish
+    ctx.strokeStyle = night ? 'rgba(200, 215, 240, 0.5)' : 'rgba(250, 252, 255, 0.65)';
+    ctx.lineWidth = 0.9;
+    ctx.beginPath();
+    for (const sp of sky.splashes) {
+      const t = sp.age / sp.max;
+      const sx = width * 0.5 + (sp.x - camera.x) * camera.zoom;
+      const sy = height * anchorYRatio + (sp.y - camera.y) * camera.zoom;
+      const rr = (1.5 + t * 4.5) * sp.s;
+      ctx.moveTo(sx + rr, sy);
+      ctx.ellipse(sx, sy, rr, rr * 0.55, 0, 0, Math.PI * 2);
+    }
+    ctx.globalAlpha = r;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // Streaks by depth layer: each a faint motion-blurred tail with a brighter head
+    const n = Math.hypot(RAIN_WIND.x, RAIN_WIND.y);
+    const ux = RAIN_WIND.x / n, uy = RAIN_WIND.y / n;
+    const col = night ? '205, 218, 240' : '245, 250, 255';
+    const layers = [[0, 0.34, 0.22], [0.34, 0.7, 0.3], [0.7, 1.01, 0.2]];
+    ctx.lineCap = 'round';
+    for (const [lo, hi, alpha] of layers) {
+      for (let pass = 0; pass < 2; pass++) {
+        ctx.beginPath();
+        let w = 1;
+        for (const d of sky.rainDrops) {
+          if (d.depth < lo || d.depth >= hi) continue;
+          w = d.w;
+          const tail = pass === 0 ? d.len : d.len * 0.35;
+          ctx.moveTo(d.x - ux * tail, d.y - uy * tail);
+          ctx.lineTo(d.x, d.y);
+        }
+        ctx.lineWidth = w * (pass === 0 ? 1 : 1.15);
+        ctx.strokeStyle = `rgba(${col}, ${(alpha * (pass === 0 ? 0.55 : 1) * Math.min(1, r * 1.2)).toFixed(3)})`;
+        ctx.stroke();
+      }
+    }
+    ctx.lineCap = 'butt';
+  }
+
+  function drawLensDrops() {
+    if (!sky.lens.length) return;
+    for (const L of sky.lens) {
+      const fadeIn = Math.min(1, L.age / 0.15);
+      const fadeOut = Math.min(1, (L.max - L.age) / 0.8);
+      const a = Math.max(0, Math.min(fadeIn, fadeOut));
+      // A bead of water: slightly darker rim, clear centre, bright highlight up-left
+      const g = ctx.createRadialGradient(L.x - L.r * 0.25, L.y - L.r * 0.3, L.r * 0.1, L.x, L.y, L.r);
+      g.addColorStop(0, `rgba(255, 255, 255, ${(0.16 * a).toFixed(3)})`);
+      g.addColorStop(0.7, `rgba(255, 255, 255, ${(0.05 * a).toFixed(3)})`);
+      g.addColorStop(0.92, `rgba(30, 40, 50, ${(0.16 * a).toFixed(3)})`);
+      g.addColorStop(1, 'rgba(30, 40, 50, 0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.ellipse(L.x, L.y, L.r, L.r * 1.08, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = `rgba(255, 255, 255, ${(0.55 * a).toFixed(3)})`;
+      ctx.beginPath(); ctx.ellipse(L.x - L.r * 0.35, L.y - L.r * 0.4, L.r * 0.18, L.r * 0.11, -0.6, 0, Math.PI * 2); ctx.fill();
+      // trail left behind by sliding drops
+      if (L.vy > 1) {
+        ctx.strokeStyle = `rgba(255, 255, 255, ${(0.08 * a).toFixed(3)})`;
+        ctx.lineWidth = L.r * 0.5;
+        ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(L.x, L.y - L.r); ctx.lineTo(L.x, L.y - L.r - L.vy * 0.8); ctx.stroke();
+        ctx.lineCap = 'butt';
+      }
     }
   }
 
