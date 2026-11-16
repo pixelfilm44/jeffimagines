@@ -928,7 +928,7 @@
       }
 
       // 3. Swirling Wind Circles (Collecting a circle releases an upward gust of air that lifts the plane & prolongs flight)
-      if (bandY < -200 && Math.random() < 0.3) {
+      if (bandY < -200 && Math.random() < 0.35) {
         const tx = plane.x + (Math.random() - 0.5) * 820;
         const ty = bandY - Math.random() * 90;
         // Ensure circle isn't inside an obstacle
