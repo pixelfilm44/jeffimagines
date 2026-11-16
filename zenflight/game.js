@@ -152,6 +152,21 @@
     }
   ];
 
+  // Cut-paper medium: cardstock palettes, pre-cut ground tiles, paper sound kit
+  PAPER.applyPalette(BIOMES);
+  const paperGround = PAPER.makeGround((y) => riverCenterAt(y), (y) => riverWidthAt(y));
+  // Runs fn with every draw call redirected onto one sheet, then lays that sheet down with fibre, lit edge and shadow
+  function paperPass(depth, ax, ay, fn) {
+    const main = ctx;
+    ctx = PAPER.passBegin(main);
+    try { fn(); } finally {
+      const lc = ctx; ctx = main;
+      PAPER.passEnd(main, lc, { depth, ax, ay, k: dpr * clampNum(camera.zoom, 0.6, 1.4), rim: paperRim });
+    }
+  }
+  let paperRim = true;      // lit / dark cut edge on moving sheets; dropped automatically on slow devices
+  let slowFrames = 0;
+
   // Deterministic Value Noise for River & Terrain Contours
   function hash1D(n) {
     const s = Math.sin(n * 127.1 + 311.7) * 43758.5453123;
@@ -468,6 +483,86 @@
 
   const audio = new AmbientSoundscape();
 
+  // ---- Cut-paper UI + sound helpers ----
+  try { document.documentElement.style.setProperty('--fibre', `url(${PAPER.textureURL()})`); } catch (e) { /* plain card colour is fine */ }
+  // Title: one cut letter per character, dropped on left to right
+  (function cutTitle() {
+    const el = document.querySelector('.main-title');
+    if (!el) return;
+    const txt = el.textContent.trim();
+    el.setAttribute('aria-label', txt);
+    el.textContent = '';
+    const r = H.rng(151);
+    [...txt].forEach((ch, i) => {
+      const sp = document.createElement('span');
+      sp.className = ch === ' ' ? 'cut gap' : 'cut';
+      sp.setAttribute('aria-hidden', 'true');
+      sp.textContent = ch === ' ' ? '\u00a0' : ch;
+      sp.style.setProperty('--rot', `${r.range(-3.5, 3.5).toFixed(2)}deg`);
+      sp.style.animationDelay = `${(0.15 + i * 0.06).toFixed(2)}s`;
+      el.appendChild(sp);
+    });
+  })();
+  // Numbers as swapped cut-out digit tiles
+  function setTiles(el, text) {
+    if (!el) return;
+    el.setAttribute('aria-label', text);
+    el.textContent = '';
+    [...text].forEach((ch, i) => {
+      const sp = document.createElement('span');
+      sp.className = ch === ' ' ? 'tile gap' : 'tile';
+      sp.setAttribute('aria-hidden', 'true');
+      sp.textContent = ch;
+      sp.style.setProperty('--rot', `${(((i * 37) % 7) - 3) * 0.7}deg`);
+      sp.style.animationDelay = `${(0.25 + i * 0.07).toFixed(2)}s`;
+      el.appendChild(sp);
+    });
+  }
+  // Paper sounds from the SOUND kit, scheduled on the game's own audio context so the Sound switch mutes them too
+  let sfxKit = null, sfxBase = 0;
+  function sfx(fn) {
+    if (!audio.initialized || !audio.ctx || audio.muted || audio.ctx.state !== 'running') return;
+    try {
+      if (!sfxKit) { sfxBase = audio.ctx.currentTime; sfxKit = SOUND.kit(audio.ctx, { dest: audio.master, master: 0.8 }); }
+      fn(sfxKit, audio.ctx.currentTime - sfxBase + 0.012);
+    } catch (e) { /* sound is optional */ }
+  }
+  // a cut piece of cardstock landing on the sheet behind it
+  function cardTap(k, t, g = 1, pan = 0, f = 1) {
+    k.noise(t, { dur: 0.045, filter: 'bandpass', f: 1100 * f, q: 0.9, gain: 0.26 * g, a: 0.001, pan });
+    k.noise(t, { dur: 0.09, color: 'brown', filter: 'lowpass', f: 650, gain: 0.3 * g, a: 0.002, pan });
+    k.tone(t, { f: [[0, 160 * f], [0.07, 85]], dur: 0.09, gain: 0.16 * g, pan });
+  }
+  // digit tile flick
+  function tileFlick(k, t, g = 1, pan = 0) {
+    k.noise(t, { dur: 0.022, filter: 'bandpass', f: 1800, q: 1.4, gain: 0.22 * g, a: 0.001, pan });
+    k.tone(t, { f: 220, dur: 0.03, gain: 0.06 * g, pan });
+  }
+  // a big cardstock layer sliding against the one behind it
+  function layerSlide(k, t, d, g = 1) {
+    k.noise(t, { dur: d, color: 'pink', filter: 'bandpass', f: [[0, 260], [d * 0.5, 620], [d, 300]], q: 0.6, gain: 0.16 * g, a: d * 0.45, pan: 0.15 });
+    k.noise(t + 0.05, { dur: d, color: 'brown', filter: 'lowpass', f: 380, gain: 0.14 * g, a: d * 0.5, pan: -0.15 });
+  }
+  function landingCardSound() {
+    sfx((k, t) => {
+      const down = t + 0.45 * LAND;
+      cardTap(k, down, 1.1, 0, 0.8);
+      k.play('thud', down, { gain: 0.35 });
+      const n = Math.min(9, (finalDistance ? finalDistance.childElementCount : 4));
+      for (let i = 0; i < n; i++) tileFlick(k, t + 0.25 + i * 0.07 + 0.34 * LAND, 0.7 + i * 0.04, -0.3);
+      const end = t + 0.25 + n * 0.07 + 0.3;
+      ['C4', 'G4', 'E5'].forEach((f, i) => k.play('ding', end + i * 0.09, { f, gain: 0.42 - i * 0.04, pan: (i - 1) * 0.25 }));
+      if (plane.isNewRecord) { k.play('impact', t + 0.5 + 0.35 * LAND, { gain: 0.7, pan: -0.3 }); }
+    });
+  }
+  const LAND = 1 - 1.70158 / 2.70158; // where a back-eased drop first touches down
+  function popTile(el) {
+    if (!el) return;
+    el.classList.remove('tile-pop');
+    void el.offsetWidth;
+    el.classList.add('tile-pop');
+  }
+
   // Game State
   let width = window.innerWidth;
   let height = window.innerHeight;
@@ -546,7 +641,7 @@
   // on screen while the ground shrinks as the plane climbs and grows as it sinks.
   const DRONE_HEIGHT = 60;   // drone's height above the plane (same units as plane.z)
   const CRUISE_ALT = 42;     // altitude at which the ground is drawn at base zoom
-  const START_ALT = 30;      // the plane is flipped in low, well under the treeline
+  const START_ALT = 14;      // the plane is flipped in just above the grass, far under the treeline
   function droneZoomFor(z) {
     const base = getBaseZoom();
     const k = (CRUISE_ALT + DRONE_HEIGHT) / (Math.max(0, z) + DRONE_HEIGHT);
@@ -906,6 +1001,7 @@
     if (gameState !== STATE.FLYING) return;
     audio.resume();
     audio.playBreezePuff(direction);
+    sfx((k, t) => k.noise(t, { dur: 0.16, filter: 'bandpass', f: [[0, 900], [0.16, 1500]], q: 0.8, gain: 0.07, a: 0.05, pan: direction * 0.5 }));
 
     // Give immediate gentle angular & lateral breeze impulse
     plane.targetHeading += direction * 0.24;
@@ -1072,6 +1168,11 @@
     }
     audio.resume();
     audio.playFlipSound();
+    setTimeout(() => sfx((k, t) => {
+      layerSlide(k, t, 0.7, 0.8);
+      k.play('paper', t + 0.05, { dur: 0.4, gain: 0.5 });
+      [0, 1, 2].forEach((i) => cardTap(k, t + 0.35 + i * 0.09, 0.6, (i - 1) * 0.5, 1.1));
+    }), 60);
     flightBiomeIdx = currentBiomeIndex;
     flightStartBloom = bloomLevels[flightBiomeIdx] || 0;
     flightBloomBanked = 0;
@@ -1106,9 +1207,9 @@
     showEndCranes();
 
     landingReason.textContent = reasonText;
-    finalDistance.textContent = `${distMeters.toLocaleString()} m`;
-    finalThermals.textContent = String(plane.thermalsCaught);
-    finalBest.textContent = `${bestDistance.toLocaleString()} m`;
+    setTiles(finalDistance, `${distMeters.toLocaleString()} m`);
+    setTiles(finalThermals, String(plane.thermalsCaught));
+    setTiles(finalBest, `${bestDistance.toLocaleString()} m`);
 
     if (newRecordBadge) {
       newRecordBadge.classList.toggle('hidden', !isNewRecord);
@@ -1126,6 +1227,7 @@
       plane.modalShown = false;
       plane.tumbleTime = 0;
       audio.playSoftBrushSound();
+      sfx((k, t) => { k.play('paper', t, { dur: 0.5, gain: 0.6 }); k.play('slap', t, { gain: 0.35 }); });
 
       const dx = plane.x - obstacleHit.x;
       const dy = plane.y - obstacleHit.y;
@@ -1169,6 +1271,7 @@
         audio.playThermalChime();
       }
       landingScreen.classList.add('active');
+      landingCardSound();
     }
   }
 
@@ -1176,7 +1279,9 @@
   btnRelaunch.addEventListener('click', startFlight);
 
   function setBiome(index) {
+    const changed = (index + BIOMES.length) % BIOMES.length !== currentBiomeIndex;
     currentBiomeIndex = (index + BIOMES.length) % BIOMES.length;
+    if (changed) sfx((k, t) => { layerSlide(k, t, 0.6, 1); cardTap(k, t + 0.5, 0.7); });
     updateTitleBloom();
     const envBtnName = document.getElementById('env-btn-name');
     if (envBtnName) envBtnName.textContent = BIOMES[currentBiomeIndex].name;
@@ -1262,7 +1367,7 @@
       const ease = 1 - Math.pow(1 - launchProgress, 3);
       const baseZoom = getBaseZoom();
       plane.y -= plane.speed * (0.65 + 0.35 * ease) * dt;
-      plane.z = 16 + Math.sin(launchProgress * Math.PI) * 18 + ease * (START_ALT - 16);
+      plane.z = 6 + Math.sin(launchProgress * Math.PI) * 5 + ease * (START_ALT - 6);
       plane.pitch = Math.sin(launchProgress * Math.PI * 2) * 0.35 * (1 - ease);
       camera.zoom = baseZoom * (1.48 - 0.48 * ease);
       camera.x += (plane.x - camera.x) * 6 * dt;
@@ -1322,6 +1427,7 @@
             audio.playThermalChime();
           }
           landingScreen.classList.add('active');
+      landingCardSound();
         }
       } else {
         // Gentle settle after meadow landing
@@ -1499,6 +1605,11 @@
         plane.pitch = 0.26;
         audio.playThermalChime();
         audio.playGustLiftSound();
+        sfx((k, t) => {
+          k.play('impact', t, { gain: 0.9 });
+          k.noise(t, { dur: 0.12, color: 'pink', filter: 'bandpass', f: [[0, 600], [0.12, 1600]], q: 0.6, gain: 0.3, a: 0.02 });
+          k.play('ding', t, { f: 'E5', gain: 0.5, pan: 0.2 });
+        });
 
         // Burst of rising wind ribbons & golden petals from the circle
         for (let r = 0; r < 6; r++) {
@@ -1665,9 +1776,20 @@
       whisper('Back down among the treetops');
     }
     statAltitude.parentElement.classList.toggle('above-trees', aboveTrees);
-    if (statAltitudeLabel) statAltitudeLabel.textContent = aboveTrees ? 'ABOVE TREES' : 'ALTITUDE';
+    if (statAltitudeLabel) {
+      const lbl = aboveTrees ? 'ABOVE TREES' : 'ALTITUDE';
+      if (statAltitudeLabel.textContent !== lbl) {
+        statAltitudeLabel.textContent = lbl;
+        popTile(statAltitude);
+        sfx((k, t) => cardTap(k, t + 0.05, 0.7, 0, 1.2));
+      }
+    }
     treeHaze += ((aboveTrees ? 1 : 0) - treeHaze) * Math.min(1, (aboveTrees ? 2.2 : 6) * dt);
-    statThermals.textContent = String(plane.thermalsCaught);
+    const ringText = String(plane.thermalsCaught);
+    if (statThermals.textContent !== ringText) {
+      statThermals.textContent = ringText;
+      if (plane.thermalsCaught > 0) { popTile(statThermals); sfx((k, t) => tileFlick(k, t + 0.1, 1, 0.5)); }
+    }
   }
 
   function recordWingTrails() {
@@ -1707,24 +1829,11 @@
   // --- RENDERING (Drone-View 2.5D Oblique Top-Down Projection) ---
   function render(time) {
     const biome = BIOMES[currentBiomeIndex];
-
-    // Above the treeline the ground layer (terrain, trees, rocks, shadows) gets a gentle motion blur
-    // along the flight direction, so obstacles up in the air with you stay crisp and stand out.
-    const blurAmt = treeHaze;
-    const blurGround = blurAmt > 0.03;
-    if (blurGround) {
-      if (groundCanvas.width !== canvas.width || groundCanvas.height !== canvas.height) {
-        groundCanvas.width = canvas.width;
-        groundCanvas.height = canvas.height;
-      }
-      ctx = groundCtx;
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-    }
-
+    ctx = mainCtx;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.save();
     ctx.scale(dpr, dpr);
 
-    // 1. Base Valley Ground Fill
     ctx.fillStyle = biome.groundBase;
     ctx.fillRect(0, 0, width, height);
 
@@ -1737,77 +1846,48 @@
 
     const viewTop = camera.y - (height * 0.7) / camera.zoom - 160;
     const viewBottom = camera.y + (height * 0.6) / camera.zoom + 160;
+    const halfW = (width / camera.zoom) * 0.6 + 200;
+    const left = camera.x - halfW;
 
-    // 2. Topographic Rolling Meadow Contours
-    drawTopographicHills(biome, viewTop, viewBottom);
-    drawGrass(biome, viewTop, viewBottom, time);
-
-    // 3. Winding River & Shimmering Currents
-    drawMeanderingRiver(biome, viewTop, viewBottom, time);
+    // 1. The valley floor: water backboard, sand, torn meadow banks and terrace sheets (pre-cut tiles)
+    paperGround.draw(ctx, currentBiomeIndex, viewTop, viewBottom, left, halfW * 2);
+    paperGround.prewarm(currentBiomeIndex, viewTop);
+    PAPER.fibre(ctx, left, viewTop, halfW * 2, viewBottom - viewTop);
     drawWakeRipples(biome);
 
-    // 4. Ground-Level Details (Wildflowers, Shrubs, Bridges)
-    drawGroundDecor(biome, time);
-    drawCreatures(biome, time);
+    // 2. Things glued flat on the floor: current slivers, wildflowers, bridges, creatures, low birds
+    paperPass(0.3, 0, 0, () => {
+      drawRiverSlivers(viewTop, viewBottom, time);
+      drawGroundDecor(biome, time);
+      drawCreatures(biome, time);
+      drawBirdFlocks(time);
+    });
 
-    // 5. Low-Flying Flocks of Birds (below the airplane)
-    drawBirdFlocks(time);
-
-    // 7. Cast Shadow of the Paper Airplane on the Valley Floor
+    // 3. Shadow of the plane, then the standing pieces (trees, rocks, windmills) as stacked sprites
     if (treeHaze < 0.5) drawAirplaneShadow();
-
-    // 8. 3D-Projected Obstacles (Sorted back-to-front by depth/height for natural overlap)
     drawSkyBalloonShadows();
     drawObstacles3D(biome, time);
     drawCloudShadows(time);
     if (treeHaze >= 0.5) drawAirplaneShadow();
-    drawHiddenCranes(time);
 
-    if (blurGround) {
-      // Composite the ground layer onto the screen as an average of samples smeared along the motion
-      ctx.restore();
-      ctx.restore();
-      ctx = mainCtx;
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.fillStyle = biome.groundBase;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      const fx = Math.sin(plane.heading), fy = -Math.cos(plane.heading);
-      const len = (2 + (plane.speed / 240) * 5) * blurAmt * dpr;
-      const samples = 5;
-      for (let i = 0; i < samples; i++) {
-        const t = i / (samples - 1) - 0.5;
-        ctx.globalAlpha = 1 / (i + 1);
-        ctx.drawImage(groundCanvas, fx * len * t, fy * len * t);
-      }
-      ctx.globalAlpha = 1;
-      ctx.save();
-      ctx.scale(dpr, dpr);
-      ctx.save();
-      ctx.translate(width * 0.5, height * anchorYRatio);
-      ctx.scale(camera.zoom, camera.zoom);
-      ctx.translate(-camera.x, -camera.y);
-    }
-
-    drawSkyBalloons(time, 'below');
+    // 4. Everything up in the air with the plane, as one nearer sheet
     drawRainbows(time);
-
-    // 9. Wingtip Condensation Trails & Breeze Wind Ribbons
-    drawWingTrails();
-    drawWindRibbons();
-
-    // 10. The Paper Airplane (3D Origami Projection with Sun Shading)
-    drawPaperAirplane(biome);
-    drawSkyBalloons(time, 'above');
-    drawEscortBirds(time);
+    paperPass(0.9, plane.x, plane.y, () => {
+      drawHiddenCranes(time);
+      drawSkyBalloons(time, 'below');
+      drawWingTrails();
+      drawWindRibbons();
+      drawPaperAirplane(biome);
+      drawSkyBalloons(time, 'above');
+      drawEscortBirds(time);
+      drawFloatingPetals(biome);
+    });
     drawFireflies(time);
     drawMists(time);
 
-    // 11. High-Altitude Drifting Petals / Dandelion Seeds
-    drawFloatingPetals(biome);
-
     ctx.restore();
 
-    // 12. Subtle Atmospheric Sun Glow in Upper Corner
+    // Subtle Atmospheric Sun Glow in Upper Corner
     const sunGrad = ctx.createRadialGradient(width * 0.82, height * 0.12, 10, width * 0.82, height * 0.12, Math.max(width, height) * 0.65);
     sunGrad.addColorStop(0, biome.sunGlow);
     ctx.globalAlpha = sky.daylight;
@@ -1824,7 +1904,7 @@
 
     drawSkyOverlay(time, anchorYRatio);
 
-    // Swirling updraft wind rings: drawn after the lighting & weather so they always glow yellow
+    // Wind rings: drawn after the lighting & weather so the gold card always reads
     ctx.save();
     ctx.translate(width * 0.5, height * anchorYRatio);
     ctx.scale(camera.zoom, camera.zoom);
@@ -1834,7 +1914,31 @@
 
     drawLensDrops();
 
+    // Photo finish: lamp light, vignette and paper grain
+    PAPER.finish(ctx, width, height, time);
+
     ctx.restore();
+  }
+
+  // Cream paper slivers drifting downstream: the river's current
+  function drawRiverSlivers(viewTop, viewBottom, time) {
+    const step = 70;
+    ctx.fillStyle = currentBiomeIndex === 3 ? '#bcd9e4' : '#eaf3ee';
+    ctx.beginPath();
+    for (let k = Math.floor(viewTop / step) - 1; k <= Math.ceil(viewBottom / step); k++) {
+      const h = hash1D(k * 3.71 + 0.3);
+      const y = k * step + ((time * (14 + h * 10) + h * step) % step);
+      const lat = (hash1D(k * 1.93 + 4.1) * 2 - 1) * 0.62;
+      const x = riverCenterAt(y) + lat * riverWidthAt(y);
+      const l = 9 + h * 12;
+      const dx = (riverCenterAt(y + l) - riverCenterAt(y - l)) * 0.5;
+      ctx.moveTo(x - dx, y - l);
+      ctx.lineTo(x + 2.2, y);
+      ctx.lineTo(x + dx, y + l);
+      ctx.lineTo(x - 2.2, y);
+      ctx.closePath();
+    }
+    ctx.fill();
   }
 
   function drawTopographicHills(biome, viewTop, viewBottom) {
@@ -2323,69 +2427,21 @@
       ctx.scale(F, F);
       if (!th.collected) ctx.globalAlpha *= th.fade;
 
+      const ringSpr = PAPER.ring();
+      const rs = (th.radius * 0.8) / ringSpr.R;
       if (th.collected) {
-        // Expanding upward gust of air animation when the plane collects the circle
+        // Caught: a sunburst springs up behind while the ring opens out and lifts away
         const t = th.collectAnim;
-        const alpha = (1 - t) * 0.75;
-        const expandRadius = th.radius * (1 + t * 0.95);
-
-        ctx.strokeStyle = `rgba(255, 250, 215, ${alpha.toFixed(3)})`;
-        ctx.lineWidth = 2.8 * (1 - t * 0.5);
-        ctx.beginPath();
-        ctx.arc(0, 0, expandRadius, 0, Math.PI * 2);
-        ctx.stroke();
-
-        ctx.strokeStyle = `rgba(230, 252, 255, ${(alpha * 0.85).toFixed(3)})`;
-        ctx.lineWidth = 2.0;
-        ctx.beginPath();
-        ctx.arc(0, 0, expandRadius * 0.65, 0, Math.PI * 2);
-        ctx.stroke();
-
+        const u = Math.min(1, t / 0.45), back = 1 + 2.70158 * Math.pow(u - 1, 3) + 1.70158 * Math.pow(u - 1, 2);
+        ctx.globalAlpha *= Math.min(1, (1 - t) * 1.6);
+        ctx.save(); ctx.rotate(0.2 + t * 0.5); PAPER.blit(ctx, PAPER.burst(), 0, 0, rs * 0.75 * (0.3 + 0.9 * back)); ctx.restore();
+        PAPER.blit(ctx, ringSpr.band, 0, 0, rs * (1 + t * 0.95));
         ctx.restore();
         continue;
       }
-
-      // Soft warm golden updraft glow
-      const grad = ctx.createRadialGradient(0, 0, th.radius * 0.2, 0, 0, th.radius * 1.25);
-      grad.addColorStop(0, 'rgba(255, 226, 130, 0.42)');
-      grad.addColorStop(0.7, 'rgba(255, 200, 95, 0.2)');
-      grad.addColorStop(1, 'rgba(255, 200, 95, 0)');
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(0, 0, th.radius * 1.25, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Soft shadow ring so the circle reads against pale meadows, snow or night
-      ctx.strokeStyle = 'rgba(90, 60, 10, 0.28)';
-      ctx.lineWidth = 3.2;
-      ctx.beginPath();
-      ctx.arc(1.5, 2, th.radius * 0.74, 0, Math.PI * 2);
-      ctx.stroke();
-
-      // Rotating swirling wind arcs (dark edge + bright core)
+      PAPER.blit(ctx, ringSpr.band, 0, 0, rs * (1 + Math.sin(th.pulse) * 0.04));
       ctx.rotate(time * 1.2 + th.pulse);
-      ctx.lineCap = 'round';
-      for (let pass = 0; pass < 2; pass++) {
-        ctx.strokeStyle = pass === 0 ? 'rgba(150, 95, 20, 0.45)' : 'rgba(255, 238, 170, 0.95)';
-        ctx.lineWidth = pass === 0 ? 4.4 : 2.4;
-        for (let a = 0; a < 3; a++) {
-          const startAngle = (a * Math.PI * 2) / 3;
-          ctx.beginPath();
-          ctx.arc(0, 0, th.radius * (0.72 + Math.sin(th.pulse) * 0.06), startAngle, startAngle + 1.35);
-          ctx.stroke();
-        }
-      }
-
-      // Inner rising air ring
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
-      ctx.lineWidth = 1.5;
-      for (let a = 0; a < 2; a++) {
-        const startAngle = a * Math.PI - time * 1.8;
-        ctx.beginPath();
-        ctx.arc(0, 0, th.radius * 0.38, startAngle, startAngle + 1.1);
-        ctx.stroke();
-      }
-
+      PAPER.blit(ctx, ringSpr.swirl, 0, 0, rs);
       ctx.restore();
     }
   }
@@ -2533,28 +2589,15 @@
   }
 
   function drawTree(ob, biome, time, parallaxX, parallaxY) {
-    if (!ob.model || ob.model.biome !== currentBiomeIndex) ob.model = buildTreeModel(ob, biome);
-    const m = ob.model;
+    // Four stacked canopy sheets per tree (cached sprites); taller sheets shift with the drone's parallax
+    const cols = (ob.species === 'conifer' && currentBiomeIndex === 1) || ob.isAutumn ? biome.autumnTreeLayers : biome.treeLayers;
+    const Rb = Math.max(24, Math.round(ob.radius / 12) * 12);
+    const tiers = PAPER.tree(ob.species, cols, Rb, ob.seed % 2);
+    const s = ob.radius / Rb;
     const sway = Math.sin(time * 1.6 + ob.swayPhase) * 2.2 + (ob.swayOff || 0);
-
-    // Shadow cast to the lower-left; taller trees throw longer shadows
-    const so = ob.height * 0.28;
-    ctx.fillStyle = 'rgba(18, 30, 28, 0.2)';
-    ctx.translate(ob.x - so * 0.85, ob.y + so);
-    ctx.fill(m.shadow);
-    ctx.translate(-(ob.x - so * 0.85), -(ob.y + so));
-
-    // Above the treeline the canopies take on a soft aerial haze, as if far below the plane
-    const haze = treeHaze > 0.01 ? shadeRgb(biome.meadowLight, 0.2, (0.32 * treeHaze).toFixed(3)) : null;
-    for (let i = 0; i < m.layers.length; i++) {
-      const L = m.layers[i];
-      const tx = ob.x + parallaxX * L.h + sway * L.sw;
-      const ty = ob.y + parallaxY * L.h;
-      ctx.translate(tx, ty);
-      ctx.fillStyle = L.color;
-      ctx.fill(L.path);
-      if (haze && L.main) { ctx.fillStyle = haze; ctx.fill(L.path); }
-      ctx.translate(-tx, -ty);
+    for (let i = 0; i < tiers.length; i++) {
+      const t = tiers[i], h = t.hf * ob.height;
+      PAPER.blit(ctx, t.img, ob.x + parallaxX * h + sway * t.sw, ob.y + parallaxY * h, s);
     }
   }
 
@@ -2568,119 +2611,42 @@
       const parallaxX = (ob.x - camera.x) * 0.0022 * depthK;
       const parallaxY = ((ob.y - camera.y) * 0.0022 - 0.35) * depthK; // slight upward tilt
 
+      if (Math.abs(ob.y - camera.y) > height / camera.zoom + 260) continue;
+
       if (ob.type === 'tree') {
         drawTree(ob, biome, time, parallaxX, parallaxY);
 
       } else if (ob.type === 'rock') {
-        // Shadow
-        ctx.fillStyle = 'rgba(18, 30, 28, 0.20)';
-        ctx.beginPath();
-        ctx.ellipse(ob.x - 14, ob.y + 15, ob.radius * 0.95, ob.radius * 0.75, 0, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Stepped rock spire
-        for (let tier = 0; tier < 3; tier++) {
-          const h = tier * 18;
-          const rx = ob.x + parallaxX * h;
-          const ry = ob.y + parallaxY * h;
-          const rad = ob.radius * (1 - tier * 0.24);
-
-          ctx.fillStyle = tier === 2 ? biome.rockHighlight : biome.rockColor;
-          ctx.beginPath();
-          for (let v = 0; v < 7; v++) {
-            const ang = (v / 7) * Math.PI * 2 + ob.seed;
-            const jag = rad * (0.82 + ((v % 2) * 0.22));
-            const vx = rx + Math.cos(ang) * jag;
-            const vy = ry + Math.sin(ang) * jag;
-            if (v === 0) ctx.moveTo(vx, vy);
-            else ctx.lineTo(vx, vy);
-          }
-          ctx.closePath();
-          ctx.fill();
-        }
+        // Stepped rock: three faceted sheets
+        const Rb = Math.max(16, Math.round(ob.radius / 8) * 8);
+        const tiers = PAPER.rock([biome.rockColor, biome.rockHighlight], Rb, Math.abs(Math.floor(ob.seed * 3)) % 3);
+        for (let i = 0; i < tiers.length; i++) PAPER.blit(ctx, tiers[i].img, ob.x + parallaxX * tiers[i].h, ob.y + parallaxY * tiers[i].h, ob.radius / Rb);
 
       } else if (ob.type === 'windmill') {
-        // Shadow
-        ctx.fillStyle = 'rgba(18, 30, 28, 0.20)';
-        ctx.beginPath();
-        ctx.arc(ob.x - 16, ob.y + 16, ob.radius * 0.7, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Stone tower rising in 3D
+        const Rb = Math.max(18, Math.round(ob.radius / 6) * 6), m = PAPER.windmill(Rb), s = ob.radius / Rb;
         const topX = ob.x + parallaxX * ob.height;
         const topY = ob.y + parallaxY * ob.height;
-
-        ctx.fillStyle = '#e8dfd1';
-        ctx.beginPath();
-        ctx.arc(ob.x, ob.y, ob.radius * 0.58, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.fillStyle = '#f5efe6';
-        ctx.beginPath();
-        ctx.arc(topX, topY, ob.radius * 0.42, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Rotating wooden sails at the top
+        PAPER.blit(ctx, m.base, ob.x, ob.y, s);
+        PAPER.blit(ctx, m.top, topX, topY, s);
         ctx.save();
         ctx.translate(topX, topY);
         ctx.rotate(ob.bladeAngle);
-        ctx.strokeStyle = '#755338';
-        ctx.fillStyle = 'rgba(255, 250, 240, 0.85)';
-        ctx.lineWidth = 2.2;
-        for (let b = 0; b < 4; b++) {
-          ctx.rotate(Math.PI * 0.5);
-          ctx.beginPath();
-          ctx.moveTo(0, 0);
-          ctx.lineTo(0, -ob.radius * 1.15);
-          ctx.stroke();
-          ctx.fillRect(2, -ob.radius * 1.1, 9, ob.radius * 0.78);
-        }
+        PAPER.blit(ctx, m.sails, 0, 0, s);
         ctx.restore();
-
-        // Conical roof cap
-        ctx.fillStyle = '#b5593f';
-        ctx.beginPath();
-        ctx.arc(topX, topY, ob.radius * 0.26, 0, Math.PI * 2);
-        ctx.fill();
+        PAPER.blit(ctx, m.cap, topX, topY, s);
 
       } else if (ob.type === 'balloon') {
         const h = ob.height;
         const bx = ob.x + parallaxX * h;
         const by = ob.y + parallaxY * h;
         const colors = biome.balloonColors[ob.colorIdx % biome.balloonColors.length];
-
         // Ground shadow far below
-        ctx.fillStyle = 'rgba(15, 25, 28, 0.15)';
+        ctx.fillStyle = 'rgba(14, 10, 30, 0.18)';
         ctx.beginPath();
-        ctx.arc(ob.x - 26, ob.y + 28, ob.radius * 0.65, 0, Math.PI * 2);
+        ctx.arc(ob.x + 26, ob.y + 28, ob.radius * 0.65, 0, Math.PI * 2);
         ctx.fill();
-
-        // Wicker basket slightly below envelope
-        ctx.fillStyle = '#8c6239';
-        ctx.fillRect(bx - 6, by + 6, 12, 10);
-
-        // Hot air balloon envelope (seen from drone above: concentric striped dome)
-        ctx.fillStyle = colors[0];
-        ctx.beginPath();
-        ctx.arc(bx, by, ob.radius, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Alternating decorative stripes
-        ctx.fillStyle = colors[1];
-        for (let s = 0; s < 4; s++) {
-          const ang = (s * Math.PI) / 2 + time * 0.25;
-          ctx.beginPath();
-          ctx.moveTo(bx, by);
-          ctx.arc(bx, by, ob.radius, ang, ang + 0.55);
-          ctx.closePath();
-          ctx.fill();
-        }
-
-        // Crown ring
-        ctx.fillStyle = colors[0];
-        ctx.beginPath();
-        ctx.arc(bx, by, ob.radius * 0.26, 0, Math.PI * 2);
-        ctx.fill();
+        const Rb = Math.max(18, Math.round(ob.radius / 6) * 6);
+        PAPER.blit(ctx, PAPER.balloon(colors[0], colors[1], Rb), bx, by, ob.radius / Rb);
       }
     }
   }
@@ -2690,11 +2656,11 @@
     // Shadow offset converges to 0 directly under the plane as altitude (plane.z) drops to 0
     const shadowOffset = Math.max(1.5, plane.z * 1.25);
     const shadowScale = Math.max(0.48, 0.92 - plane.z * 0.007);
-    ctx.translate(plane.x - shadowOffset * 0.85, plane.y + shadowOffset);
+    ctx.translate(plane.x + shadowOffset * 0.85, plane.y + shadowOffset);
     ctx.rotate(plane.heading);
     ctx.scale(shadowScale, shadowScale);
 
-    ctx.fillStyle = `rgba(18, 30, 32, ${Math.max(0.10, 0.34 - plane.z * 0.0035).toFixed(3)})`;
+    ctx.fillStyle = `rgba(14, 10, 30, ${Math.max(0.12, 0.36 - plane.z * 0.0035).toFixed(3)})`;
     ctx.beginPath();
     ctx.moveTo(0, -24);
     ctx.lineTo(-21, 16);
@@ -2929,6 +2895,7 @@
     lastWhisperAt = now;
     whisperEl.textContent = text;
     whisperEl.classList.add('show');
+    sfx((k, t) => cardTap(k, t + 0.4 * LAND, 0.6, 0, 1.2));
     clearTimeout(whisperTimer);
     whisperTimer = setTimeout(() => whisperEl.classList.remove('show'), 2300);
   }
@@ -4127,7 +4094,7 @@
     for (let i = 0; i < skyBalloons.length; i++) {
       const b = skyBalloons[i];
       const a = b.curAlt || b.alt;
-      const sx = b.x - a * 1.06, sy = b.y + a * 1.25;
+      const sx = b.x + a * 1.06, sy = b.y + a * 1.25;
       if (Math.abs(sy - camera.y) > height / camera.zoom + 300) continue;
       ctx.beginPath();
       ctx.ellipse(sx, sy, b.radius * 0.95, b.radius * 0.85, -0.3, 0, Math.PI * 2);
@@ -4417,15 +4384,15 @@
     }
 
     // Cloud puffs passing between the drone and the plane
+    let puffIdx = 0;
     for (const pf of sky.puffs) {
       const a = pf.a * (0.16 * sky.clouds + 0.3 * sky.fog) * (1 - sky.night * 0.5);
+      const v = puffIdx++ % 3;
       if (a < 0.01) continue;
-      const g = ctx.createRadialGradient(pf.x, pf.y, 0, pf.x, pf.y, pf.r);
-      g.addColorStop(0, `rgba(255, 255, 255, ${a.toFixed(3)})`);
-      g.addColorStop(1, 'rgba(255, 255, 255, 0)');
-      ctx.fillStyle = g;
-      ctx.fillRect(pf.x - pf.r, pf.y - pf.r, pf.r * 2, pf.r * 2);
+      ctx.globalAlpha = Math.min(0.62, a * 3);
+      ctx.drawImage(PAPER.cloud(v), pf.x - pf.r, pf.y - pf.r * 0.7, pf.r * 2, pf.r * 1.4);
     }
+    ctx.globalAlpha = 1;
 
     // Rain streaks / snowflakes heading down toward the ground (screen centre is straight down)
     drawRain(anchorYRatio);
@@ -4602,8 +4569,12 @@
   resetWorld();
 
   function loop(now) {
-    const dt = Math.min(0.05, (now - lastTime) / 1000);
+    const rawMs = now - lastTime;
+    const dt = Math.min(0.05, rawMs / 1000);
     lastTime = now;
+    // Slow device: after ~2 s of frames over 30 ms, drop the lit-edge pass on moving sheets (shadows and fibre stay)
+    if (rawMs > 30 && rawMs < 250) slowFrames++; else slowFrames = Math.max(0, slowFrames - 2);
+    if (slowFrames > 120) paperRim = false;
     const elapsed = now * 0.001;
 
     update(dt, elapsed);
@@ -4613,4 +4584,8 @@
   }
 
   requestAnimationFrame(loop);
+
+  // Step the game by hand (for testing and frame-by-frame capture): advances dt seconds and draws one frame
+  let stepClock = 0;
+  window.zenStep = (dt = 1 / 60) => { stepClock += dt; update(dt, performance.now() * 0.001 + stepClock); render(performance.now() * 0.001 + stepClock); };
 })();
